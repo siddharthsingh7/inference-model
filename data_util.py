@@ -147,15 +147,15 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                 for line in uuid_file:
                     uuid_list.append(line.strip())
 
-        with gfile.GFile(q_raw_path, mode="rb") as r_q_file:
-            with gfile.GFile(c_raw_path, mode="rb") as r_c_file:
-                with gfile.GFile(q_ids_path, mode="rb") as q_file:
-                    with gfile.GFile(c_ids_path, mode="rb") as c_file:
-                        with gfile.GFile(label_path, mode="rb") as l_file:
+        with gfile.GFile(q_raw_path, mode="r") as r_q_file:
+            with gfile.GFile(c_raw_path, mode="r") as r_c_file:
+                with gfile.GFile(q_ids_path, mode="r") as q_file:
+                    with gfile.GFile(c_ids_path, mode="r") as c_file:
+                        with gfile.GFile(label_path, mode="r") as l_file:
                             for line in l_file:
-                                label = map(int,line.strip().split(" "))
-                                context = map(int, c_file.readline().strip().split(" "))
-                                question = map(int,q_file.readline().strip().split(" "))
+                                label = list(map(int,line.strip().split(" ")))
+                                context = list(map(int, c_file.readline().strip().split(" ")))
+                                question = list(map(int,q_file.readline().strip().split(" ")))
                                 context_raw = r_c_file.readline().strip().split(" ")
                                 question_raw = r_q_file.readline().strip().split(" ")
 
@@ -203,4 +203,3 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
 
     dataset = {"training":train, "validation":valid, "training_raw":train_raw, "validation_raw":valid_raw, "dev":dev, "dev_raw":dev_raw, "dev_uuid":uuid_list}
     return dataset, max_q_len, max_c_len
-
