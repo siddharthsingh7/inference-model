@@ -53,8 +53,8 @@ class Decoder(object):
     def __init__(self,size):
         self.size = size
 
-    def decode(self,input_repr,x_mask,q_mask):
-        seq_mask = tf.concat( [q_mask,x_mask],1)
+    def decode(self,input_repr,x_mask,q_mask,a_mask):
+        seq_mask = tf.concat( [q_mask,x_mask,a_mask],1)
         with tf.variable_scope('decode_layer1'):
             print('-'*5 + "decoding layer 1" + '-'*5)
             m,_,_ = self.decode_LSTM(input_repr,seq_mask,None)
@@ -103,20 +103,22 @@ class InferModel(object):
         self.x = tf.placeholder(tf.int64, [N, None],name='x')
         self.q_mask = tf.placeholder(tf.bool,[N, None],name='q_mask')
         self.x_mask = tf.placeholder(tf.bool,[N, None],name='x_mask')
-        self.ans = tf.placeholder(tf.float32,[N,],name='ans')
-        self.y = tf.placeholder(tf.int32,[N,self.config.num_classes],name='y')
+        self.a = tf.placeholder(tf.int32,[N, None],name='a')
+        self.a_mask = tf.placeholder(tf.bool,[N, None],name='a_mask')
+        self.y = tf.placeholder(tf.int32,[N, self.config.num_classes],name='y')
         self.JX = tf.placeholder(tf.int32,shape=(),name='JX')
         self.JQ = tf.placeholder(tf.int32,shape=(),name='JQ')
+        self.JA = tf.placeholder(tf.int32,shape=(),name='JA')
 
         with tf.variable_scope("infer"):
-            question,context = self.setup_embeddings()
+            question,context,answer = self.setup_embeddings()
             print("question",question)
             print("context",context)
-            self.question_repr,self.context_repr = self.encode(question,context,self.x_mask,self.q_mask) #[N,JQ,2*d] , [N,JX,2d]
+            self.question_repr,self.context_repr,self.answer_repr = self.encode(question,context,answer,self.x_mask,self.q_mask,self.a_mask) #[N,JQ,2d] , [N,JX,2d], [N,JA,2d]
             #TODO concatenate answer
-            self.input_repr = tf.concat( [self.question_repr,self.context_repr],1)
+            self.input_repr = tf.concat( [self.question_repr,self.context_repr,self.answer_repr],1)
             print("input",self.input_repr) # [N,JX+JQ,2*d]
-            self.decode_repr = self.decoder.decode(self.input_repr,self.x_mask,self.q_mask)
+            self.decode_repr = self.decoder.decode(self.input_repr,self.x_mask,self.q_mask,self.a_mask)
             print("decode_repr",self.decode_repr)
 
             sequence_length = tf.reduce_sum(tf.cast(self.x_mask, 'int32'), axis=1)
@@ -144,7 +146,7 @@ class InferModel(object):
             self.train_op = opt
             self.summary_op = tf.summary.merge_all()
 
-    def encode(self,question,context,context_mask,question_mask):
+    def encode(self,question,context,answer,context_mask,question_mask,answer_mask):
 
         with tf.variable_scope("ques_encode"):
             print('-'*5 + "encoding question" + '-'*5)
@@ -154,16 +156,23 @@ class InferModel(object):
             print('-'*5 + "encoding context" + '-'*5)
             context_repr,_,_ = self.encoder.encode(context,context_mask,encoder_state_input=None)
             print("context repr",context_repr)
-        return question_repr,context_repr
+        with tf.variable_scope("answer_encode"):
+            print('-'*5 + "encoding answer" + '-'*5)
+            answer_repr,_,_ = self.encoder.encode(answer,answer_mask,encoder_state_input=None)
+            print("answer repr",answer_repr)
+
+        return question_repr,context_repr,answer_repr
 
     def setup_embeddings(self):
         with tf.variable_scope("emb"):
             word_emb_mat = tf.get_variable(dtype=tf.float32 ,initializer=self.pretrained_embeddings,name="word_emb_mat")
             question = tf.nn.embedding_lookup(word_emb_mat,self.q)
             context = tf.nn.embedding_lookup(word_emb_mat,self.x)
+            answer = tf.nn.embedding_lookup(word_emb_mat,self.a)
             question = tf.reshape(question,[self.config.batch_size,self.JQ,self.embedding_size])
             context = tf.reshape(context,[self.config.batch_size,self.JX,self.embedding_size])
-            return question,context
+            answer = tf.reshape(answer,[self.config.batch_size,self.JA,self.embedding_size])
+            return question,context,answer
 
     def setup_loss(self,preds):
         loss = tf.losses.hinge_loss(logits=preds,labels=self.y)
@@ -173,12 +182,13 @@ class InferModel(object):
 
     def create_feed_dict(self, question_batch,question_len_batch,
                          context_batch, context_len_batch,
-                         start_batch,end_batch,
+                         ans_batch,ans_len_batch,
                          label_batch=None):
 
         feed_dict = {}
         JQ = np.max(question_len_batch)
-        JX= np.max(context_len_batch)
+        JX = np.max(context_len_batch)
+        JA = np.max(ans_len_batch)
 
         def add_paddings(sentence, max_length):
             mask = [True] * len(sentence)
@@ -202,15 +212,18 @@ class InferModel(object):
 
         question, question_mask = padding_batch(question_batch, JQ)
         context, context_mask = padding_batch(context_batch, JX)
+        ans_batch = [[x] for x in ans_batch]
+        answer, answer_mask = padding_batch(ans_batch, JA)
 
         feed_dict[self.q] = question
         feed_dict[self.q_mask] = question_mask
         feed_dict[self.x] = context
         feed_dict[self.x_mask] = context_mask
-        ans_one_hot_vector = np.sum( (start_batch,end_batch),axis=0 )
-        feed_dict[self.ans] = ans_one_hot_vector
+        feed_dict[self.a] = answer
+        feed_dict[self.a_mask] = answer_mask
         feed_dict[self.JQ] = JQ
         feed_dict[self.JX] = JX
+        feed_dict[self.JA] = JA
         if label_batch is not None:
             num_classes = 2 #(0,1)
             temp = np.zeros([len(label_batch),num_classes])
@@ -224,10 +237,10 @@ class InferModel(object):
         return feed_dict
 
     def train_on_batch(self,sess,q_batch,q_len_batch,
-                       c_batch,c_len_batch,start_label_batch,
-                       end_label_batch,infer_label_batch):
+                       c_batch,c_len_batch,a_batch,
+                       a_len_batch,infer_label_batch):
         feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
-                                     start_label_batch, end_label_batch\
+                                     a_batch, a_len_batch\
                                      ,label_batch=infer_label_batch)
 
         loss,global_step,summary = sess.run([self.loss,self.global_step,self.summary_op], feed_dict=feed)
@@ -256,10 +269,10 @@ class InferModel(object):
         return global_loss,summary
 
     def answer(self,session,test_batch):
-        q_batch,q_len_batch,c_batch,c_len_batch,start_label_batch,end_label_batch,infer_label_answers = test_batch
+        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_batch
 
         feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
-                                     start_label_batch, end_label_batch)
+                                     a_batch, a_len_batch)
         output_feed = self.prediction #already argmaxed
         outputs = session.run(output_feed,feed)
         return (outputs,infer_label_answers)
@@ -295,10 +308,10 @@ class InferModel(object):
         return valid_loss
 
     def test(self,session,test_batch):
-        q_batch,q_len_batch,c_batch,c_len_batch,start_label_batch,end_label_batch,infer_label_answers = test_batch
+        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_batch
 
         feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
-                                     start_label_batch, end_label_batch,infer_label_answers)
+                                     a_batch, a_len_batch,infer_label_answers)
         output_feed = self.loss
         output_loss = session.run(output_feed,feed)
         return output_loss

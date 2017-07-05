@@ -36,9 +36,10 @@ def negative_sampling(batches):
     q_len_batch = batches[1]
     c_sent_batch = batches[2]
     c_len_batch = batches[3]
-    start_label_batch = batches[4][:,0]
-    end_label_batch = batches[4][:,1]
+    a_batch = batches[4]
+    a_len_batch = batches[5]
     # added negative samples
+
     c_sent_batch = np.tile(c_sent_batch, (2,))
     c_len_batch = np.tile(c_len_batch, (2, ))
 
@@ -50,12 +51,12 @@ def negative_sampling(batches):
         q_len_batch_shuffled[i] = q_len_batch[x]
         q_sent_batch_shuffled[i] = q_sent_batch[x]
 
+    infer_label_batch = np.concatenate((np.ones(a_batch.shape), np.zeros(a_batch.shape)), axis = 0)
     q_sent_batch = np.concatenate((q_sent_batch, q_sent_batch_shuffled), axis=0)
     q_len_batch = np.concatenate((q_len_batch,q_len_batch_shuffled),axis=0)
-    start_label_batch = np.tile(start_label_batch,(2,))
-    end_label_batch = np.tile(end_label_batch,(2,))
-    infer_label_batch = np.concatenate((np.ones(start_label_batch.shape), np.zeros(end_label_batch.shape)), axis = 0)
-    return [q_sent_batch, q_len_batch, c_sent_batch, c_len_batch,start_label_batch, end_label_batch, infer_label_batch]
+    a_batch = np.tile(a_batch,(2,))
+    a_len_batch = np.tile(a_len_batch,(2,))
+    return [q_sent_batch, q_len_batch, c_sent_batch, c_len_batch,a_batch, a_len_batch, infer_label_batch]
 
 
 def minibatches(data, batch_size):
@@ -96,6 +97,7 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
 
     max_c_len = 0
     max_q_len = 0
+    max_a_len = 0
 
     if data_pfx_list is None:
         data_pfx_list = [train_pfx, valid_pfx]
@@ -153,9 +155,11 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                                 context_raw = r_c_file.readline().strip().split(" ")
                                 question_raw = r_q_file.readline().strip().split(" ")
 
+                                answers = list(map(int,context[label[0]:label[1]]))
+                                answer_raw = context_raw[label[0]:label[1]]
                                 c_len = len(context)
                                 q_len = len(question)
-
+                                a_len = len(answers)
                                 # Do not toss out, only  truncate for dev set
                                 if q_len > max_q_toss:
                                     if data_pfx == dev_pfx:
@@ -174,11 +178,11 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
 
                                 max_c_len = max(max_c_len, c_len)
                                 max_q_len = max(max_q_len, q_len)
-
-                                entry = [question, q_len, context, c_len, label]
+                                max_a_len = max(max_a_len,a_len)
+                                entry = [question, q_len, context, c_len, max_a_len,a_len]
                                 data_list.append(entry)
 
-                                raw_entry = [question_raw, context_raw]
+                                raw_entry = [question_raw, context_raw, answer_raw]
                                 data_list_raw.append(raw_entry)
 
                                 counter += 1
