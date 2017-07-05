@@ -10,6 +10,20 @@ logging.basicConfig(level=logging.INFO)
 
 from ptpython.repl import embed
 
+def extract_axis_1(data, ind):
+    """
+    Get specified elements along the first axis of tensor.
+    :param data: Tensorflow tensor that will be subsetted.
+    :param ind: Indices to take (one for each element along axis 0 of data).
+    :return: Subsetted tensor.
+    """
+
+    batch_range = tf.range(tf.shape(data)[0])
+    indices = tf.stack([batch_range, ind], axis=1)
+    res = tf.gather_nd(data, indices)
+
+    return res
+
 class Encoder(object):
     def __init__(self,size):
         self.size = size
@@ -73,15 +87,14 @@ class Decoder(object):
 
 class InferModel(object):
     def __init__(self, *args):
-        self.state_size = 100
-        self.encoder = Encoder(self.state_size)
-        self.decoder = Decoder(self.state_size)
         self.config = args[0]
         self.pretrained_embeddings = args[1]
-        self.num_per_epoch = args[2]
-        self.vocab = args[3]
-        self.embedding_size = 100
-
+        self.vocab = args[2]
+        self.embedding_size = self.config.embedding_size
+        self.state_size = self.config.state_size
+        self.encoder = Encoder(self.state_size)
+        self.decoder = Decoder(self.state_size)
+ 
         self.global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0), trainable=False)
 
         N,V= self.config.batch_size,self.vocab
@@ -106,8 +119,9 @@ class InferModel(object):
             self.decode_repr = self.decoder.decode(self.input_repr,self.x_mask,self.q_mask)
             print("decode_repr",self.decode_repr)
 
-            self.preds = self.decode_repr[:,-1,:] #TODO get last layer 
-
+            sequence_length = tf.reduce_sum(tf.cast(self.x_mask, 'int32'), axis=1)
+            self.preds = extract_axis_1(self.decode_repr,sequence_length -1)
+            print("preds",self.preds)
             print('-'*5 + "SOFTMAX LAYER" + '-'*5)
             with tf.variable_scope('softmax'):
                 W = tf.get_variable('W',shape=(2*self.state_size,self.config.num_classes),dtype=tf.float32,initializer=tf.contrib.layers.xavier_initializer())
@@ -118,23 +132,16 @@ class InferModel(object):
             self.prediction = tf.argmax(self.pred,1)
             print("preds",self.pred)
             tf.summary.histogram('logit_label', self.pred)
-            self.loss = self.setup_loss(self.pred)
 
+            self.loss = self.setup_loss(self.pred)
+            # TODO decay learning rate
+            # TODO dropout
+            # TODO gradient clipping
             self.learning_rate = 0.01
             self.max_gradient_norm = 0.2
-            opt = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
-            '''
-            #gradient clipping
-            grads_and_vars = opt.compute_gradients(self.loss)
-            variables = [output[1] for output in grads_and_vars]
-            gradients = [output[0] for output in grads_and_vars]
 
-            gradients = tf.clip_by_global_norm(gradients, clip_norm=self.max_gradient_norm)[0]
-            grads_and_vars = [(gradients[i], variables[i]) for i in range(len(gradients))]
-
-            self.train_op = opt.apply_gradients(grads_and_vars)
-            '''
-            self.train_op = tf.train.AdamOptimizer
+            opt = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss,global_step=self.global_step)
+            self.train_op = opt
             self.summary_op = tf.summary.merge_all()
 
     def encode(self,question,context,context_mask,question_mask):
@@ -237,18 +244,15 @@ class InferModel(object):
         for i, batch in enumerate(train_minibatch):
             loss,summary = self.train_on_batch(sess,*batch)
             self.writer.add_summary(summary, epoch * batch_count + i)
-            #print("Loss-",loss)
+            print("Loss-",loss)
             #logging.info('-'*5 + "EVALUATING ON TRAINING" + '-'*5)
             train_dataset=[train_set,train_raw]
             _ = self.evaluate_answer(sess,train_dataset)
-            #logging.info('-'*5 + "EVALUATING ON VALIDATION" + '-'*5)
+            logging.info('-'*5 + "EVALUATING ON VALIDATION" + '-'*5)
             valid_dataset=[train_set,train_raw]
             score = self.evaluate_answer(sess,valid_dataset)
+            print("validation-accuracy",score)
             global_loss += loss
-            global_accuracy += score
-        global_accuracy = np.mean(global_accuracy)
-        global_loss = loss/batch_count
-        print("Accuracy",global_accuracy)
         return global_loss,summary
 
     def answer(self,session,test_batch):
@@ -277,7 +281,7 @@ class InferModel(object):
         for batch in preds:
             pred,true = batch
             accuracy +=  accuracy_score(true,pred)
-        accuracy = np.mean(accuracy)
+        accuracy = accuracy/len(preds)
         return accuracy
 
     def validate(self,session,dataset):

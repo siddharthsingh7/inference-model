@@ -15,12 +15,19 @@ logging.basicConfig(level=logging.INFO)
 
 
 tf.app.flags.DEFINE_string("data_dir", "./data/squad", "SQUAD data directory")
-tf.app.flags.DEFINE_string("data_size", "debug", "debug/full")
-tf.app.flags.DEFINE_integer("max_question_length", 60,"Maximum Question Length")
-tf.app.flags.DEFINE_integer("max_context_length", 300,"Maximum Context Length")
-tf.app.flags.DEFINE_integer("batch_size", 10,"batch_size")
-tf.app.flags.DEFINE_integer("gpu_id", 0, "Which GPU to use.")
-tf.app.flags.DEFINE_float("gpu_fraction", 0.5, "Fraction of the GPU memory to allocate.")
+tf.app.flags.DEFINE_string("data_size", "tiny", "tiny/full")
+tf.app.flags.DEFINE_float("learning_rate", 0.03, "Initial learning rate ")
+tf.app.flags.DEFINE_integer("num_epochs_per_decay", 6, "Epochs before reducing learning rate.")
+tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.1, "Decay factor")
+tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Norm for clipping gradients ")
+tf.app.flags.DEFINE_float("dropout", 0.15, "Dropout")
+tf.app.flags.DEFINE_integer("num_epochs",12, "Number of epochs")
+tf.app.flags.DEFINE_integer("state_size",100, "State Size")
+tf.app.flags.DEFINE_integer("embedding_size",100, "Embedding Size")
+tf.app.flags.DEFINE_integer("max_question_length", 60, "Maximum Question Length")
+tf.app.flags.DEFINE_integer("max_context_length", 300, "Maximum Context Length")
+tf.app.flags.DEFINE_integer("batch_size", 10, "batch_size")
+
 FLAGS = tf.app.flags.FLAGS
 
 
@@ -48,11 +55,9 @@ def main(_):
     embeddings = load_glove_embeddings(embed_path)
 
 
-    num_per_epoch = len(dataset['training'])
-    model = InferModel(FLAGS,embeddings,num_per_epoch,vocab)
-    with tf.device("gpu:{}".format(FLAGS.gpu_id)):
+    model = InferModel(FLAGS,embeddings,vocab)
+    with tf.device("gpu:0"):
         config = tf.ConfigProto()
-        config.gpu_options.per_process_gpu_memory_fraction = FLAGS.gpu_fraction
         config.allow_soft_placement = True
 
         with tf.Session(config=config) as sess:

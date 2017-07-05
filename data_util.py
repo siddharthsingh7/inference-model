@@ -16,13 +16,11 @@ logger.setLevel(logging.DEBUG)
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
 
-def get_minibatches(data, minibatch_size, shuffle=True):
+def get_minibatches(data, minibatch_size):
     list_data = type(data) is list and (type(data[0]) is list or type(data[0]) is np.ndarray)
     data_size = len(data[0]) if list_data else len(data)
     indices = np.arange(data_size)
-    if shuffle:
-        np.random.shuffle(indices)
-
+    np.random.shuffle(indices)
     for minibatch_start in np.arange(0, data_size, minibatch_size):
         minibatch_indices = indices[minibatch_start:minibatch_start + minibatch_size]
         yield [minibatch(d, minibatch_indices) for d in data] if list_data \
@@ -38,7 +36,6 @@ def negative_sampling(batches):
     q_len_batch = batches[1]
     c_sent_batch = batches[2]
     c_len_batch = batches[3]
-    #embed(globals(),locals())
     start_label_batch = batches[4][:,0]
     end_label_batch = batches[4][:,1]
     # added negative samples
@@ -61,10 +58,10 @@ def negative_sampling(batches):
     return [q_sent_batch, q_len_batch, c_sent_batch, c_len_batch,start_label_batch, end_label_batch, infer_label_batch]
 
 
-def minibatches(data, batch_size, shuffle=True):
+def minibatches(data, batch_size):
     batches = [np.array(col) for col in zip(*data)]
     batches = negative_sampling(batches)
-    return get_minibatches(batches, batch_size, shuffle)
+    return get_minibatches(batches, batch_size)
 
 
 def load_glove_embeddings(glove_path):
@@ -72,8 +69,6 @@ def load_glove_embeddings(glove_path):
     logger.info("Loading glove embedding")
     logger.info("Dimension: {}".format(glove.shape[1]))
     logger.info("Vocabulary: {}" .format(glove.shape[0]))
-    logger.info("dtype of glove is: %s" % type(glove))
-    logger.info("dtype of glove is: %s" % type(glove[0][0]))
     glove = tf.to_float(glove)
     logger.info("glove is: " + str(glove) )
     return glove
@@ -86,7 +81,6 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
     train_pfx = pjoin(source_dir, "train")
     valid_pfx = pjoin(source_dir, "val")
     dev_pfx = pjoin(source_dir, "dev")
-    data_mode = "tiny"
     if data_mode=="tiny":
         max_train = 100
         max_valid = 10
