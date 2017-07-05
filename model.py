@@ -212,7 +212,6 @@ class InferModel(object):
 
         question, question_mask = padding_batch(question_batch, JQ)
         context, context_mask = padding_batch(context_batch, JX)
-        ans_batch = [[x] for x in ans_batch]
         answer, answer_mask = padding_batch(ans_batch, JA)
 
         feed_dict[self.q] = question

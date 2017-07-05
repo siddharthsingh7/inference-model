@@ -179,7 +179,7 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                                 max_c_len = max(max_c_len, c_len)
                                 max_q_len = max(max_q_len, q_len)
                                 max_a_len = max(max_a_len,a_len)
-                                entry = [question, q_len, context, c_len, max_a_len,a_len]
+                                entry = [question, q_len, context, c_len, answers,a_len]
                                 data_list.append(entry)
 
                                 raw_entry = [question_raw, context_raw, answer_raw]
