@@ -38,25 +38,34 @@ def negative_sampling(batches):
     c_len_batch = batches[3]
     a_batch = batches[4]
     a_len_batch = batches[5]
-    # added negative samples
 
-    c_sent_batch = np.tile(c_sent_batch, (2,))
-    c_len_batch = np.tile(c_len_batch, (2, ))
+    q_final_batch = []
+    q_final_len_batch = []
+    c_final_batch = []
+    c_final_len_batch = []
+    a_final_batch = []
+    a_final_len_batch = []
+    infer_label_batch = []
 
-    q_sent_batch_shuffled = np.copy(q_sent_batch)
-    q_len_batch_shuffled = np.copy(q_len_batch)
-    q_indices = np.arange(len(q_len_batch))
-    np.random.shuffle(q_indices)
-    for i,x in enumerate(q_indices):
-        q_len_batch_shuffled[i] = q_len_batch[x]
-        q_sent_batch_shuffled[i] = q_sent_batch[x]
+    for c,c_l,a,a_l,q,q_l in zip(c_sent_batch,c_len_batch,a_batch,a_len_batch,q_sent_batch,q_len_batch):
+        q_final_batch.append(q)
+        q_final_len_batch.append(q_l)
+        c_final_batch.append(c)
+        c_final_len_batch.append(c_l)
+        a_final_batch.append(a)
+        a_final_len_batch.append(a_l)
+        infer_label_batch.append(1)
+        for qq, qq_l in zip(q_sent_batch,q_len_batch):
+            if qq != q:
+                q_final_batch.append(qq)
+                q_final_len_batch.append(qq_l)
+                c_final_batch.append(c)
+                c_final_len_batch.append(c_l)
+                a_final_batch.append(a)
+                a_final_len_batch.append(a_l)
+                infer_label_batch.append(0)
 
-    infer_label_batch = np.concatenate((np.ones(a_batch.shape), np.zeros(a_batch.shape)), axis = 0)
-    q_sent_batch = np.concatenate((q_sent_batch, q_sent_batch_shuffled), axis=0)
-    q_len_batch = np.concatenate((q_len_batch,q_len_batch_shuffled),axis=0)
-    a_batch = np.tile(a_batch,(2,))
-    a_len_batch = np.tile(a_len_batch,(2,))
-    return [q_sent_batch, q_len_batch, c_sent_batch, c_len_batch,a_batch, a_len_batch, infer_label_batch]
+    return [q_final_batch, q_final_len_batch, c_final_batch, c_final_len_batch,a_final_batch, a_final_len_batch, infer_label_batch]
 
 
 def minibatches(data, batch_size):

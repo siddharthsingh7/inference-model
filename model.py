@@ -168,7 +168,7 @@ class InferModel(object):
         return question_repr,context_repr,answer_repr
 
     def setup_embeddings(self):
-        with tf.variable_scope("emb"):
+        with tf.variable_scope("emb"), tf.device("/cpu:0"):
             word_emb_mat = tf.get_variable(dtype=tf.float32 ,initializer=self.pretrained_embeddings,name="word_emb_mat")
             question = tf.nn.embedding_lookup(word_emb_mat,self.q)
             context = tf.nn.embedding_lookup(word_emb_mat,self.x)
@@ -299,6 +299,7 @@ class InferModel(object):
         for batch in preds:
             pred,true = batch
             accuracy +=  accuracy_score(true,pred)
+            #print(classification_report(true, pred, target_names=['0','1']))
         accuracy = accuracy/len(preds)
         return accuracy
 
@@ -313,12 +314,12 @@ class InferModel(object):
         return valid_loss
 
     def test(self,session,test_batch):
-        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_batch
+        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_set
 
         feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
                                      a_batch, a_len_batch,infer_label_answers)
-        output_feed = self.loss
-        output_loss = session.run(output_feed,feed)
+        output_feed = [self.loss,self.prediction]
+        output_loss,output_prediction = session.run(output_feed,feed)
         return output_loss
 
 
