@@ -132,6 +132,10 @@ class InferModel(object):
                 self.pred = tf.nn.softmax(tf.matmul(self.preds, W) + b)
 
             self.prediction = tf.argmax(self.pred,1)
+            self.true_label = tf.argmax(self.y,1)
+            correct_prediction = tf.equal(self.prediction,self.true_label)
+            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+            tf.summary.scalar('accuracy', accuracy)
             print("preds",self.pred)
             tf.summary.histogram('logit_label', self.pred)
 
@@ -175,7 +179,8 @@ class InferModel(object):
             return question,context,answer
 
     def setup_loss(self,preds):
-        loss = tf.losses.hinge_loss(logits=preds,labels=self.y)
+        #loss = tf.losses.hinge_loss(logits=preds,labels=self.true_label)
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=preds,labels=self.y))
         print("loss",loss)
         tf.summary.scalar('loss', loss)
         return loss
@@ -257,10 +262,11 @@ class InferModel(object):
             loss,summary = self.train_on_batch(sess,*batch)
             self.writer.add_summary(summary, epoch * batch_count + i)
             print("Loss-",loss)
-            #logging.info('-'*5 + "EVALUATING ON TRAINING" + '-'*5)
+            logging.info('-' + "EVALUATING ON TRAINING" + '-')
             train_dataset=[train_set,train_raw]
-            _ = self.evaluate_answer(sess,train_dataset)
-            logging.info('-'*5 + "EVALUATING ON VALIDATION" + '-'*5)
+            train_score = self.evaluate_answer(sess,train_dataset)
+            print("training-accuracy",train_score)
+            logging.info('-' + "EVALUATING ON VALIDATION" + '-')
             valid_dataset=[train_set,train_raw]
             score = self.evaluate_answer(sess,valid_dataset)
             print("validation-accuracy",score)
