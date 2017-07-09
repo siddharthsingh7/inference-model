@@ -10,6 +10,27 @@ logging.basicConfig(level=logging.INFO)
 
 from ptpython.repl import embed
 
+def add_paddings(sentence, max_length):
+    mask = [True] * len(sentence)
+    pad_len = max_length - len(sentence)
+    if pad_len > 0:
+        padded_sentence = sentence + [0] * pad_len
+        mask += [False] * pad_len
+    else:
+        padded_sentence = sentence[:max_length]
+        mask = mask[:max_length]
+    return padded_sentence, mask
+
+def padding_batch(data, max_len):
+    padded_data = []
+    padded_mask = []
+    for sentence in data:
+        d, m = add_paddings(sentence, max_len)
+        padded_data.append(d)
+        padded_mask.append(m)
+    return (padded_data, padded_mask)
+
+
 def extract_axis_1(data, ind):
     """
     Get specified elements along the first axis of tensor.
@@ -94,7 +115,7 @@ class InferModel(object):
         self.state_size = self.config.state_size
         self.encoder = Encoder(self.state_size)
         self.decoder = Decoder(self.state_size)
- 
+
         self.global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0), trainable=False)
 
         N,V= self.config.batch_size,self.vocab
@@ -115,9 +136,13 @@ class InferModel(object):
             print("question",question)
             print("context",context)
             self.question_repr,self.context_repr,self.answer_repr = self.encode(question,context,answer,self.x_mask,self.q_mask,self.a_mask) #[N,JQ,2d] , [N,JX,2d], [N,JA,2d]
-            #TODO concatenate answer
+
+            #match_repr = self.attention_layer(self.context_repr, self.question_repr)
+            #print("match_repr",match_repr)
             self.input_repr = tf.concat( [self.question_repr,self.context_repr,self.answer_repr],1)
             print("input",self.input_repr) # [N,JX+JQ,2*d]
+
+
             self.decode_repr = self.decoder.decode(self.input_repr,self.x_mask,self.q_mask,self.a_mask)
             print("decode_repr",self.decode_repr)
 
@@ -128,7 +153,6 @@ class InferModel(object):
             with tf.variable_scope('softmax'):
                 W = tf.get_variable('W',shape=(2*self.state_size,self.config.num_classes),dtype=tf.float32,initializer=tf.contrib.layers.xavier_initializer())
                 b = tf.get_variable('b',shape=(1),dtype=tf.float32,initializer=tf.constant_initializer(0))
-
                 self.pred = tf.nn.softmax(tf.matmul(self.preds, W) + b)
 
             self.prediction = tf.argmax(self.pred,1)
@@ -143,12 +167,23 @@ class InferModel(object):
             # TODO decay learning rate
             # TODO dropout
             # TODO gradient clipping
-            self.learning_rate = 0.01
+            self.learning_rate = 0.0001
             self.max_gradient_norm = 0.2
 
-            opt = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss,global_step=self.global_step)
+            opt = tf.train.AdadeltaOptimizer(learning_rate=self.learning_rate).minimize(self.loss,global_step=self.global_step)
             self.train_op = opt
             self.summary_op = tf.summary.merge_all()
+
+    def attention_layer(self,context_repr,question_repr):
+        with tf.variable_scope("attention layer"):
+            #attention based on the paper: Reasoning about Entailment with Attention
+            W_y = tf.get_variable("W_y",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
+            W_h = tf.get_variable("W_h",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
+            W_p = tf.get_variable("W_p",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
+            W_x = tf.get_variable("W_p",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
+            w = tf.get_variable("w",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
+
+            #TODO
 
     def encode(self,question,context,answer,context_mask,question_mask,answer_mask):
 
@@ -194,26 +229,6 @@ class InferModel(object):
         JQ = np.max(question_len_batch)
         JX = np.max(context_len_batch)
         JA = np.max(ans_len_batch)
-
-        def add_paddings(sentence, max_length):
-            mask = [True] * len(sentence)
-            pad_len = max_length - len(sentence)
-            if pad_len > 0:
-                padded_sentence = sentence + [0] * pad_len
-                mask += [False] * pad_len
-            else:
-                padded_sentence = sentence[:max_length]
-                mask = mask[:max_length]
-            return padded_sentence, mask
-
-        def padding_batch(data, max_len):
-            padded_data = []
-            padded_mask = []
-            for sentence in data:
-                d, m = add_paddings(sentence, max_len)
-                padded_data.append(d)
-                padded_mask.append(m)
-            return (padded_data, padded_mask)
 
         question, question_mask = padding_batch(question_batch, JQ)
         context, context_mask = padding_batch(context_batch, JX)
@@ -316,8 +331,6 @@ class InferModel(object):
     def test(self,session,test_batch):
         q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_set
 
-        feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
-                                     a_batch, a_len_batch,infer_label_answers)
         output_feed = [self.loss,self.prediction]
         output_loss,output_prediction = session.run(output_feed,feed)
         return output_loss
