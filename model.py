@@ -45,6 +45,36 @@ def extract_axis_1(data, ind):
 
     return res
 
+class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
+    def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size):
+        self.d = state_size
+        self.Y = encoder_input
+        self.enc_size = encoder_input_size
+        super(AttentionCell,self).__init__(state_size,state_is_tuple)
+
+    def __call__(self,inputs,state):
+        with tf.variable_scope("attention_cell"):
+            c,h = state
+            W_y,W_h,W_p,W_x,w = self.get_weights(self.d)
+            m1 = tf.reshape(tf.matmul(tf.reshape(self.Y, [-1,self.d]),W_y),[-1,self.enc_size,self.d],name="m1")
+            m2 = tf.expand_dims(tf.matmul(inputs, W_h) ,1,name="m2")
+            M = tf.tanh(m1+m2)
+            alpha = tf.nn.softmax(tf.reshape(tf.matmul(tf.reshape(M,[-1,self.d]),tf.expand_dims(w,1)),[-1,self.enc_size],name="alpha")) #[se]
+            r = tf.reshape(tf.matmul(tf.expand_dims(alpha,1),self.Y),[-1,self.d])
+            h_star = tf.tanh( tf.matmul(r,W_p) + tf.matmul(inputs,W_x))
+            return (h_star, tf.contrib.rnn.LSTMStateTuple(h_star,h_star))
+
+    @staticmethod
+    def get_weights(state_size):
+        xavier_init= tf.contrib.layers.xavier_initializer()
+        zero_init = tf.constant_initializer(0)
+        W_y = tf.get_variable("W_y",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
+        W_h = tf.get_variable("W_h",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
+        W_p = tf.get_variable("W_p",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
+        W_x = tf.get_variable("W_x",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
+        w = tf.get_variable("w",shape=[state_size,],dtype=tf.float32,initializer=xavier_init)
+        return W_y,W_h,W_p,W_x,w
+
 class Encoder(object):
     def __init__(self,size):
         self.size = size
@@ -53,7 +83,6 @@ class Encoder(object):
 
         cell_fw = tf.contrib.rnn.LSTMCell(num_units=self.size, state_is_tuple=True)
         cell_bw = tf.contrib.rnn.LSTMCell(num_units=self.size, state_is_tuple=True)
-        #TODO add dropout
 
         if encoder_state_input is not None:
             state_fw = encoder_state_input[0]
@@ -119,7 +148,6 @@ class InferModel(object):
         self.global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0), trainable=False)
 
         N,V= self.config.batch_size,self.vocab
-        self.config.num_classes = 2
         self.q = tf.placeholder(tf.int64, [N, None],name='q')
         self.x = tf.placeholder(tf.int64, [N, None],name='x')
         self.q_mask = tf.placeholder(tf.bool,[N, None],name='q_mask')
@@ -137,53 +165,58 @@ class InferModel(object):
             print("context",context)
             self.question_repr,self.context_repr,self.answer_repr = self.encode(question,context,answer,self.x_mask,self.q_mask,self.a_mask) #[N,JQ,2d] , [N,JX,2d], [N,JA,2d]
 
-            #match_repr = self.attention_layer(self.context_repr, self.question_repr)
-            #print("match_repr",match_repr)
-            self.input_repr = tf.concat( [self.question_repr,self.context_repr,self.answer_repr],1)
-            print("input",self.input_repr) # [N,JX+JQ,2*d]
+            self.config.entailment_attention = True
+            if self.config.entailment_attention:
+                with tf.variable_scope("attention_layer"):
+                    #attention based on the paper: Reasoning about Entailment with Attention
+                    q_len = tf.reshape(tf.reduce_sum(tf.cast(self.q_mask, 'int32'), axis=1),[-1,])
+                    x_len = tf.reshape(tf.reduce_sum(tf.cast(self.x_mask, 'int32'), axis=1),[-1,])
+                    cell = tf.contrib.rnn.BasicLSTMCell(self.config.state_size,state_is_tuple=True)
+                    state_fw,state_bw = tf.split(self.context_repr,2,axis=2)
+                    first_cell_fw = AttentionCell(state_size=self.state_size,state_is_tuple=True,
+                                                  encoder_input=state_fw,encoder_input_size=self.JX)
+                    first_cell_bw = AttentionCell(state_size=self.state_size,state_is_tuple=True,
+                                                  encoder_input=state_bw,encoder_input_size=self.JX)
+                    (h_fw,h_bw),(f_fw,f_bw) = tf.nn.bidirectional_dynamic_rnn(first_cell_fw,first_cell_bw,
+                                                                              question,q_len,
+                                                                              dtype=tf.float32)
+                    self.decode_repr = tf.concat([h_fw,h_bw],2)
+                    print("decode_repr",self.decode_repr)
 
+                    self.preds = extract_axis_1(self.decode_repr,q_len -1)
+            else:
 
-            self.decode_repr = self.decoder.decode(self.input_repr,self.x_mask,self.q_mask,self.a_mask)
-            print("decode_repr",self.decode_repr)
+                self.input_repr = tf.concat( [self.question_repr,self.context_repr,self.answer_repr],1)
+                print("input",self.input_repr) # [N,JX+JQ,2*d]
+                self.decode_repr = self.decoder.decode(self.input_repr,self.x_mask,self.q_mask,self.a_mask)
+                print("decode_repr",self.decode_repr)
+                sequence_length = tf.reduce_sum(tf.cast(self.x_mask, 'int32'), axis=1)
+                self.preds = extract_axis_1(self.decode_repr,sequence_length -1)
 
-            sequence_length = tf.reduce_sum(tf.cast(self.x_mask, 'int32'), axis=1)
-            self.preds = extract_axis_1(self.decode_repr,sequence_length -1)
             print("preds",self.preds)
             print('-'*5 + "SOFTMAX LAYER" + '-'*5)
             with tf.variable_scope('softmax'):
                 W = tf.get_variable('W',shape=(2*self.state_size,self.config.num_classes),dtype=tf.float32,initializer=tf.contrib.layers.xavier_initializer())
                 b = tf.get_variable('b',shape=(1),dtype=tf.float32,initializer=tf.constant_initializer(0))
-                self.pred = tf.nn.softmax(tf.matmul(self.preds, W) + b)
+                self.pred = tf.matmul(self.preds, W) + b
 
             self.prediction = tf.argmax(self.pred,1)
             self.true_label = tf.argmax(self.y,1)
             correct_prediction = tf.equal(self.prediction,self.true_label)
-            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-            tf.summary.scalar('accuracy', accuracy)
+            self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+            tf.summary.scalar('accuracy', self.accuracy)
             print("preds",self.pred)
             tf.summary.histogram('logit_label', self.pred)
 
             self.loss = self.setup_loss(self.pred)
-            # TODO decay learning rate
-            # TODO dropout
             # TODO gradient clipping
-            self.learning_rate = 0.0001
+            # TODO batch normalization
             self.max_gradient_norm = 0.2
 
-            opt = tf.train.AdadeltaOptimizer(learning_rate=self.learning_rate).minimize(self.loss,global_step=self.global_step)
+            opt = tf.train.AdadeltaOptimizer(learning_rate=self.config.learning_rate).minimize(self.loss,global_step=self.global_step)
             self.train_op = opt
             self.summary_op = tf.summary.merge_all()
 
-    def attention_layer(self,context_repr,question_repr):
-        with tf.variable_scope("attention layer"):
-            #attention based on the paper: Reasoning about Entailment with Attention
-            W_y = tf.get_variable("W_y",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
-            W_h = tf.get_variable("W_h",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
-            W_p = tf.get_variable("W_p",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
-            W_x = tf.get_variable("W_p",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
-            w = tf.get_variable("w",shape=(2*self.state_size,2*self.state_size),dtype=tf.float32)
-
-            #TODO
 
     def encode(self,question,context,answer,context_mask,question_mask,answer_mask):
 
@@ -216,7 +249,7 @@ class InferModel(object):
     def setup_loss(self,preds):
         #loss = tf.losses.hinge_loss(logits=preds,labels=self.true_label)
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=preds,labels=self.y))
-        print("loss",loss)
+        #TODO Loss mask
         tf.summary.scalar('loss', loss)
         return loss
 
@@ -255,9 +288,9 @@ class InferModel(object):
             feed_dict[self.y] = temp
         return feed_dict
 
-    def train_on_batch(self,sess,q_batch,q_len_batch,
-                       c_batch,c_len_batch,a_batch,
-                       a_len_batch,infer_label_batch):
+    def train_on_batch(self,sess,*batches):
+
+        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_batch = batches
         feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
                                      a_batch, a_len_batch\
                                      ,label_batch=infer_label_batch)
@@ -277,14 +310,14 @@ class InferModel(object):
             loss,summary = self.train_on_batch(sess,*batch)
             self.writer.add_summary(summary, epoch * batch_count + i)
             print("Loss-",loss)
-            logging.info('-' + "EVALUATING ON TRAINING" + '-')
+            #logging.info('-' + "EVALUATING ON TRAINING" + '-')
             train_dataset=[train_set,train_raw]
             train_score = self.evaluate_answer(sess,train_dataset)
-            print("training-accuracy",train_score)
-            logging.info('-' + "EVALUATING ON VALIDATION" + '-')
+            #print("training-accuracy",train_score)
+            #logging.info('-' + "EVALUATING ON VALIDATION" + '-')
             valid_dataset=[train_set,train_raw]
             score = self.evaluate_answer(sess,valid_dataset)
-            print("validation-accuracy",score)
+            #print("validation-accuracy",score)
             global_loss += loss
         return global_loss,summary
 
@@ -292,66 +325,79 @@ class InferModel(object):
         q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_batch
 
         feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
-                                     a_batch, a_len_batch)
-        output_feed = self.prediction #already argmaxed
-        outputs = session.run(output_feed,feed)
-        return (outputs,infer_label_answers)
+                                     a_batch, a_len_batch,infer_label_answers)
+        output_feed = [self.prediction,self.accuracy] #already argmaxed
+        outputs,accuracy = session.run(output_feed,feed)
+        return (outputs,infer_label_answers,accuracy)
 
     def predict_on_batch(self,session,dataset):
-        predict_minibatch = minibatches(dataset,self.config.batch_size) #TODO - shuffle
+        predict_minibatch = minibatches(dataset,self.config.batch_size)
         preds = []
         for i,batch in enumerate(predict_minibatch):
             preds.append(self.answer(session,batch))
         return preds
 
-    def evaluate_answer(self,session,eval_dataset):
-
+    def evaluate_answer(self,session,eval_dataset,print_report=False):
         batch_num = int(np.ceil(len(eval_dataset) * 1.0 / self.config.batch_size))
         eval_data = eval_dataset[0]
         eval_raw = eval_dataset[1]
         preds = self.predict_on_batch(session,eval_data)
-        accuracy = 0
+        accuracy_overall = 0
         for batch in preds:
-            pred,true = batch
-            accuracy +=  accuracy_score(true,pred)
-            #print(classification_report(true, pred, target_names=['0','1']))
-        accuracy = accuracy/len(preds)
-        return accuracy
+            pred,true,accuracy = batch
+            accuracy_overall +=  accuracy_score(true,pred)
+            if print_report:
+                print(classification_report(true, pred, target_names=['0','1']))
+        accuracy_overall = accuracy
+        return accuracy_overall
 
     def validate(self,session,dataset):
         batch_num = int(np.ceil(len(dataset) * 1.0 / self.config.batch_size))
         valid_minibatch = minibatches(dataset,self.config.batch_size)
         valid_loss = 0
+        valid_accuracy = 0
         for i,batch in enumerate(valid_minibatch):
-            loss = self.test(session,batch)
+            loss,accuracy,prediction = self.test(session,batch)
             valid_loss += loss
-        valid_loss = valid_loss/batch_num
-        return valid_loss
+            valid_accuracy += accuracy
+        valid_loss = valid_loss/self.config.batch_size
+        valid_accuracy = valid_accuracy/self.config.batch_size
+        return valid_loss,valid_accuracy
 
     def test(self,session,test_batch):
-        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_set
+        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch,infer_label_answers = test_batch
+        input_feed = self.create_feed_dict(q_batch, q_len_batch, c_batch, c_len_batch,
+                                           a_batch, a_len_batch,
+                                           label_batch=infer_label_answers)
 
-        output_feed = [self.loss,self.prediction]
-        output_loss,output_prediction = session.run(output_feed,feed)
-        return output_loss
+        output_feed = [self.loss,self.prediction,self.accuracy]
+        output_loss,output_prediction,accuracy = session.run(output_feed,input_feed)
+        return output_loss,accuracy,output_prediction
 
 
     def train(self, session, dataset):
         params = tf.trainable_variables()
-        train_set = dataset['training']
-        valid_set = dataset['validation']
-        train_raw = dataset['training_raw']
-        valid_raw = dataset['validation_raw']
-        self.writer = tf.summary.FileWriter('./tmp/tensorflow', graph=tf.get_default_graph())
+        if self.config.dataset == 'squad':
+            train_set = dataset['training']
+            valid_set = dataset['validation']
+            train_raw = dataset['training_raw']
+            valid_raw = dataset['validation_raw']
+        elif self.config.dataset == 'snli':
+            train_set = dataset['training']
+            valid_set = dataset['validation']
+            train_raw = None
+            valid_raw = None
+        self.writer = tf.summary.FileWriter('./tmp/', graph=tf.get_default_graph())
 
-        for epoch in range(5):
+        for epoch in range(self.config.num_epochs):
+            #self.learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, i * FLAGS.batch_size, train_size, FLAGS.decay, staircase=True)
             logging.info('-'*5 + "TRAINING-EPOCH-" + str(epoch)+ '-'*5)
             score,summary = self.run_epoch(session, train_set,valid_set,train_raw,valid_raw,epoch)
             logging.info('-'*5 + "VALIDATION" + '-'*5)
-            validation_loss = self.validate(session, valid_set)
+            validation_loss,validation_accuracy = self.validate(session, valid_set)
             print("validation loss",str(validation_loss))
-            valid_dataset = [valid_set,valid_raw] 
-            score = self.evaluate_answer(session, valid_dataset)
+            print("validation accuracy",str(validation_accuracy))
+            valid_dataset = [valid_set,valid_raw]
+            score = self.evaluate_answer(session, valid_dataset,printreport=True)
             print("Validation score",score)
             #TODO save the model
-

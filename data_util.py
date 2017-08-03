@@ -1,44 +1,35 @@
 import os
-import pickle
 import logging
-from collections import Counter, defaultdict
-import argparse
 
 from tensorflow.python.platform import gfile
 import numpy as np
-from os.path import join as pjoin
+from os.path import join
 import tensorflow as tf
 from ptpython.repl import embed
-
+import random
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
 
-def get_minibatches(data, minibatch_size):
+def get_minibatches(data, minibatch_size, dataset):
     list_data = type(data) is list and (type(data[0]) is list or type(data[0]) is np.ndarray)
     data_size = len(data[0]) if list_data else len(data)
     indices = np.arange(data_size)
     np.random.shuffle(indices)
+    if dataset == 'squad':
+        squad_flag = True
+    else:
+        squad_flag = False
+    if squad_flag:
+        data = negative_sampling(data, minibatch_size)
     for minibatch_start in np.arange(0, data_size, minibatch_size):
         minibatch_indices = indices[minibatch_start:minibatch_start + minibatch_size]
-        yield [minibatch(d, minibatch_indices) for d in data] if list_data \
-            else minibatch(data, minibatch_indices)
+        batches = [minibatch(d, minibatch_indices) for d in data] if list_data else minibatch(data, minibatch_indices)
+        yield batches
 
-
-def minibatch(data, minibatch_idx):
-    return data[minibatch_idx] if type(data) is np.ndarray else [data[i] for i in minibatch_idx]
-
-
-def negative_sampling(batches):
-    q_sent_batch = batches[0]
-    q_len_batch = batches[1]
-    c_sent_batch = batches[2]
-    c_len_batch = batches[3]
-    a_batch = batches[4]
-    a_len_batch = batches[5]
-
+def negative_sampling(batches, minibatch_size):
     q_final_batch = []
     q_final_len_batch = []
     c_final_batch = []
@@ -47,7 +38,7 @@ def negative_sampling(batches):
     a_final_len_batch = []
     infer_label_batch = []
 
-    for c,c_l,a,a_l,q,q_l in zip(c_sent_batch,c_len_batch,a_batch,a_len_batch,q_sent_batch,q_len_batch):
+    for q, q_l, c, c_l, a, a_l in zip(*batches):
         q_final_batch.append(q)
         q_final_len_batch.append(q_l)
         c_final_batch.append(c)
@@ -55,23 +46,29 @@ def negative_sampling(batches):
         a_final_batch.append(a)
         a_final_len_batch.append(a_l)
         infer_label_batch.append(1)
-        for qq, qq_l in zip(q_sent_batch,q_len_batch):
+
+        for i, qq in enumerate(batches[0]):
             if qq != q:
                 q_final_batch.append(qq)
-                q_final_len_batch.append(qq_l)
+                q_final_len_batch.append(batches[1][i])
                 c_final_batch.append(c)
                 c_final_len_batch.append(c_l)
                 a_final_batch.append(a)
                 a_final_len_batch.append(a_l)
                 infer_label_batch.append(0)
+                break # Only one negative per positive
+    data = [q_final_batch, q_final_len_batch, c_final_batch, c_final_len_batch, a_final_batch, a_final_len_batch, infer_label_batch]
+    return data
 
-    return [q_final_batch, q_final_len_batch, c_final_batch, c_final_len_batch,a_final_batch, a_final_len_batch, infer_label_batch]
+
+def minibatch(data, minibatch_idx):
+    batches = data[minibatch_idx] if type(data) is np.ndarray else [data[i] for i in minibatch_idx]
+    return batches
 
 
-def minibatches(data, batch_size):
+def minibatches(data, batch_size, dataset):
     batches = [np.array(col) for col in zip(*data)]
-    batches = negative_sampling(batches)
-    return get_minibatches(batches, batch_size)
+    return get_minibatches(batches, batch_size, dataset)
 
 
 def load_glove_embeddings(glove_path):
@@ -80,17 +77,19 @@ def load_glove_embeddings(glove_path):
     logger.info("Dimension: {}".format(glove.shape[1]))
     logger.info("Vocabulary: {}" .format(glove.shape[0]))
     glove = tf.to_float(glove)
-    logger.info("glove is: " + str(glove) )
+    logger.info("glove is: " + str(glove))
     return glove
 
 
 def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=None):
-
+    '''
+    From Stanford Assignment 4 starter code
+    '''
     assert os.path.exists(source_dir)
-
-    train_pfx = pjoin(source_dir, "train")
-    valid_pfx = pjoin(source_dir, "val")
-    dev_pfx = pjoin(source_dir, "dev")
+    max_c_toss = 1500
+    train_pfx = join(source_dir, "train")
+    valid_pfx = join(source_dir, "val")
+    dev_pfx = join(source_dir, "dev")
     if data_mode=="tiny":
         max_train = 100
         max_valid = 10
@@ -111,7 +110,7 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
     if data_pfx_list is None:
         data_pfx_list = [train_pfx, valid_pfx]
     else:
-        data_pfx_list = [pjoin(source_dir, data_pfx) for data_pfx in data_pfx_list]
+        data_pfx_list = [join(source_dir, data_pfx) for data_pfx in data_pfx_list]
 
     for data_pfx in data_pfx_list:
         if data_pfx == train_pfx:
@@ -159,16 +158,19 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                         with gfile.GFile(label_path, mode="r") as l_file:
                             for line in l_file:
                                 label = list(map(int,line.strip().split(" ")))
-                                context = list(map(int, c_file.readline().strip().split(" ")))
-                                question = list(map(int,q_file.readline().strip().split(" ")))
-                                context_raw = r_c_file.readline().strip().split(" ")
-                                question_raw = r_q_file.readline().strip().split(" ")
-
+                                try:
+                                    context = list(map(int, c_file.readline().strip().split(" ")))
+                                    question = list(map(int,q_file.readline().strip().split(" ")))
+                                    context_raw = r_c_file.readline().strip().split(" ")
+                                    question_raw = r_q_file.readline().strip().split(" ")
+                                except Exception as e:
+                                    embed(globals(),locals())
                                 answers = list(map(int,context[label[0]:label[1]]))
                                 answer_raw = context_raw[label[0]:label[1]]
                                 c_len = len(context)
                                 q_len = len(question)
                                 a_len = len(answers)
+
                                 # Do not toss out, only  truncate for dev set
                                 if q_len > max_q_toss:
                                     if data_pfx == dev_pfx:
@@ -187,7 +189,7 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
 
                                 max_c_len = max(max_c_len, c_len)
                                 max_q_len = max(max_q_len, q_len)
-                                max_a_len = max(max_a_len,a_len)
+                                max_a_len = max(max_a_len, a_len)
                                 entry = [question, q_len, context, c_len, answers,a_len]
                                 data_list.append(entry)
 
@@ -209,4 +211,37 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
         logger.info("maximum context length %d" % max_c_len)
 
     dataset = {"training":train, "validation":valid, "training_raw":train_raw, "validation_raw":valid_raw, "dev":dev, "dev_raw":dev_raw, "dev_uuid":uuid_list}
-    return dataset, max_q_len, max_c_len
+    return dataset
+
+def load_snli_dataset(source_dir, data_size, max_sent1_len, max_sent2_len):
+
+    train_data = join(source_dir,'mnli.train')
+    dev_data = join(source_dir,'mnli.dev.matched')
+    train = []
+    valid = []
+    with gfile.GFile(train_data, 'r') as f:
+        for line in f:
+            line = line.strip().replace('[', '').replace(']', '')
+            tokens = line.split(',')
+            label = int(tokens[-1])
+            pos = tokens.index(" ';'")
+            sent1 = tokens[:pos]
+            sent2 = tokens[pos+1: len(tokens) - 2]
+            map(int,sent1)
+            map(int,sent2)
+            train.append([sent1, len(sent1), sent2, len(sent2), label])
+
+    with gfile.GFile(dev_data, 'r') as f:
+        for line in f:
+            line = line.strip().replace('[', '').replace(']', '')
+            tokens = line.split(',')
+            label = int(tokens[-1])
+            pos = tokens.index(" ';'")
+            sent1 = tokens[:pos]
+            sent2 = tokens[pos+1: len(tokens) - 2]
+            map(int,sent1)
+            map(int,sent2)
+            train.append([sent1, len(sent1), sent2, len(sent2), label])
+
+    dataset = {"training":train, "validation":valid}
+    return dataset, max_sent1_len, max_sent2_len
