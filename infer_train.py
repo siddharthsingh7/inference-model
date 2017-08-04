@@ -57,7 +57,8 @@ class Trainer():
         self.loss = model.get_loss()
         self.accuracy = model.get_accuracy()
         self.summary_op = model.get_summary()
-        self.writer = tf.summary.FileWriter('./temp/', graph=tf.get_default_graph())
+        self.train_writer = tf.summary.FileWriter('./temp/train/', graph=tf.get_default_graph())
+        self.valid_writer = tf.summary.FileWriter('./temp/valid/', graph=tf.get_default_graph())
 
     def run_epoch(self, session, train_set, train_raw,epoch):
         total_batches = int(len(train_set) / self.config.batch_size)
@@ -70,7 +71,7 @@ class Trainer():
             session.run(self.model.inc_step)
             #TODO Learning rate decay
             loss, accuracy, summary, global_step = self.train_single_batch(session,*batch)
-            self.writer.add_summary(summary, global_step)
+            self.train_writer.add_summary(summary, global_step)
             training_accuracy += accuracy
             training_loss += loss
         training_loss = training_loss/total_batches
@@ -96,6 +97,7 @@ class Trainer():
             if len(batch[0]) != self.config.batch_size:
                 continue
             loss,accuracy,summary,global_step = self.validate_single_batch(session,*batch)
+            self.valid_writer.add_summary(summary, global_step)
             validation_accuracy += accuracy
             validation_loss += loss
         validation_loss = validation_loss/total_batches
@@ -109,10 +111,10 @@ class Trainer():
                                             a_batch,a_len_batch,label_batch=infer_label_batch)
         output_feed = [self.loss,self.global_step,self.accuracy,self.summary_op,self.model.prediction]
         loss,global_step,accuracy,summary_op,prediction = session.run(output_feed,feed_dict=input_feed)
-        print(classification_report(infer_label_batch, prediction, target_names=['0','1']))
-        print("prediction",prediction)
-        print("true",infer_label_batch)
-        return loss,accuracy,global_step,summary_op
+        #print(classification_report(infer_label_batch, prediction, target_names=['0','1']))
+        #print("prediction",prediction)
+        #print("true",infer_label_batch)
+        return loss, accuracy, summary_op, global_step
 
     def predict_single_batch(self,session,*batch):
         pass
