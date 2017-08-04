@@ -1,7 +1,7 @@
 import os
 import json
 
-
+import math
 import numpy as np
 import tensorflow as tf
 
@@ -60,12 +60,15 @@ class Trainer():
         self.writer = tf.summary.FileWriter('./temp/', graph=tf.get_default_graph())
 
     def run_epoch(self, session, train_set, train_raw,epoch):
-        total_batches = len(train_set) / self.config.batch_size
+        total_batches = int(len(train_set) / self.config.batch_size)
         train_minibatches = minibatches(train_set, self.config.batch_size, self.config.dataset)
         training_loss = 0.0
         training_accuracy = 0.0
         for batch in tqdm(train_minibatches, desc="Trainings", total=total_batches):
+            if len(batch[0]) != self.config.batch_size:
+                continue
             session.run(self.model.inc_step)
+            #TODO Learning rate decay
             loss, accuracy, summary, global_step = self.train_single_batch(session,*batch)
             self.writer.add_summary(summary, global_step)
             training_accuracy += accuracy
@@ -85,11 +88,13 @@ class Trainer():
         return loss,accuracy,summary,global_step
 
     def validate(self,session,validation_set,validation_raw,epoch):
-        total_batches = len(validation_set)/ self.config.batch_size
+        total_batches = int(len(validation_set)/self.config.batch_size)
         validation_accuracy = 0.0
         validation_loss = 0.0
         validate_minibatches = minibatches(validation_set,self.config.batch_size,self.config.dataset)
         for batch in tqdm(validate_minibatches,total=total_batches,desc="Validate"):
+            if len(batch[0]) != self.config.batch_size:
+                continue
             loss,accuracy,summary,global_step = self.validate_single_batch(session,*batch)
             validation_accuracy += accuracy
             validation_loss += loss
