@@ -1,4 +1,6 @@
 import tensorflow as tf
+from tensorflow.python.ops.rnn_cell import DropoutWrapper, RNNCell, LSTMStateTuple
+import numpy as np
 from ptpython.repl import embed
 
 def add_paddings(sentence, max_length):
@@ -41,7 +43,7 @@ def get_last_layer(data, ind):
 
 def biLSTM(inputs, mask, state_size, cell_fw=None,cell_bw=None,dropout=None,scope=None):
     if scope is None:
-        scope = "biLSTM" 
+        scope = "biLSTM"
     with tf.variable_scope(scope):
 
         if cell_fw:
@@ -80,6 +82,7 @@ def softmax_masked(scores, mask):
     denominator = tf.reduce_sum(numerator, 1, keep_dims=True)
     weights = tf.div(numerator, denominator)
     return weights
+
 
 class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
     def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size,encoder_mask):

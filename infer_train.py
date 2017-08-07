@@ -23,9 +23,10 @@ tf.app.flags.DEFINE_string("data_dir", "./data/squad_features", "SQUAD data dire
 tf.app.flags.DEFINE_string("data_size", "tiny", "tiny/full")
 tf.app.flags.DEFINE_float("learning_rate", 0.0015, "Initial learning rate ")
 tf.app.flags.DEFINE_integer("num_per_decay", 6, "Epochs before reducing learning rate.")
-tf.app.flags.DEFINE_float("decay_factor", 0.22, "Decay factor")
+tf.app.flags.DEFINE_float("decay_factor", 0.01, "Decay factor")
 tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Norm for clipping gradients ")
-tf.app.flags.DEFINE_float("dropout", 0.5, "Dropout")
+tf.app.flags.DEFINE_float("dropout", 0.8, "Dropout")
+tf.app.flags.DEFINE_float("l2_beta", 0.0001, "L2-beta")
 tf.app.flags.DEFINE_integer("num_epochs", 10, "Number of epochs")
 tf.app.flags.DEFINE_integer("state_size", 100, "State Size")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Embedding Size")
@@ -127,9 +128,10 @@ class Trainer():
 
     def predict_single(self, session, *batch):
         self.model.config.batch_size = 1
-        q_batch,q_len_batch,c_batch,c_len_batch,a_batch,a_len_batch = batch[0]
+        q_batch,q_len_batch,c_batch,c_len_batch,cf_batch,cf_len_batch,a_batch,a_len_batch = batch[0]
         input_feed  = self.model.create_feed_dict([q_batch],[q_len_batch],[c_batch],[c_len_batch],
-                                                  [a_batch],[a_len_batch],label_batch=None)
+                                                  [cf_batch],[cf_len_batch],[a_batch],[a_len_batch]
+                                                  ,label_batch=None)
 
         output_feed = [self.model.prediction,self.model.logits]
         probs = []

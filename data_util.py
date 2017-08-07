@@ -97,8 +97,8 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
     dev_pfx = join(source_dir, "dev")
     if data_mode=="tiny":
         max_train = 100
-        max_valid = 10
-        max_dev = 10
+        max_valid = 20
+        max_dev = 20
 
     train = []
     valid = []

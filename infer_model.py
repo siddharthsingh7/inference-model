@@ -129,9 +129,9 @@ class InferModel(object):
     def setup_loss(self, logits, mask):
         onehot_labels = tf.one_hot(self.y, 2)
         #loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=onehot_labels))
-        #l2_cost = 0.01 * tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables()])
-        loss = tf.reduce_mean(tf.losses.hinge_loss(logits=logits, labels=onehot_labels))
-        #loss =  tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,labels=onehot_labels))
+        #l2_cost = self.config.l2_beta * tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables()])
+        #loss = tf.reduce_mean(tf.losses.hinge_loss(logits=logits, labels=onehot_labels))
+        loss =  tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,labels=onehot_labels))
         #loss = loss + l2_cost
         tf.summary.scalar('loss', loss)
 
