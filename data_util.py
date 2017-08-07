@@ -34,15 +34,19 @@ def negative_sampling(batches, minibatch_size):
     q_final_len_batch = []
     c_final_batch = []
     c_final_len_batch = []
+    cf_final_batch = []
+    cf_final_len_batch = []
     a_final_batch = []
     a_final_len_batch = []
     infer_label_batch = []
 
-    for q, q_l, c, c_l, a, a_l in zip(*batches):
+    for q, q_l, c, c_l, cf, cf_l,a, a_l in zip(*batches):
         q_final_batch.append(q)
         q_final_len_batch.append(q_l)
         c_final_batch.append(c)
         c_final_len_batch.append(c_l)
+        cf_final_batch.append(cf)
+        cf_final_len_batch.append(cf_l)
         a_final_batch.append(a)
         a_final_len_batch.append(a_l)
         infer_label_batch.append(1)
@@ -53,11 +57,13 @@ def negative_sampling(batches, minibatch_size):
                 q_final_len_batch.append(batches[1][i])
                 c_final_batch.append(c)
                 c_final_len_batch.append(c_l)
+                cf_final_batch.append(cf)
+                cf_final_len_batch.append(cf_l)
                 a_final_batch.append(a)
                 a_final_len_batch.append(a_l)
                 infer_label_batch.append(0)
-                break # Only one negative per positive
-    data = [q_final_batch, q_final_len_batch, c_final_batch, c_final_len_batch, a_final_batch, a_final_len_batch, infer_label_batch]
+                break #
+    data = [q_final_batch, q_final_len_batch, c_final_batch, c_final_len_batch, cf_final_batch, cf_final_len_batch ,a_final_batch, a_final_len_batch, infer_label_batch]
     return data
 
 
@@ -86,7 +92,6 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
     From Stanford Assignment 4 starter code
     '''
     assert os.path.exists(source_dir)
-    max_c_toss = 1500
     train_pfx = join(source_dir, "train")
     valid_pfx = join(source_dir, "val")
     dev_pfx = join(source_dir, "dev")
@@ -134,7 +139,7 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                 max_entry = max_dev
             logger.info("")
             logger.info("Loading as dev data")
-
+ 
         c_ids_path = data_pfx + ".ids.context"
         c_raw_path = data_pfx + ".context"
         q_ids_path = data_pfx + ".ids.question"
@@ -167,10 +172,12 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                                     embed(globals(),locals())
                                 answers = list(map(int,context[label[0]:label[1]]))
                                 answer_raw = context_raw[label[0]:label[1]]
-                                c_len = len(context)
+                                c_len = int(len(context)/4)
                                 q_len = len(question)
                                 a_len = len(answers)
 
+                                context = context[:c_len]
+                                context_features = context[c_len:]
                                 # Do not toss out, only  truncate for dev set
                                 if q_len > max_q_toss:
                                     if data_pfx == dev_pfx:
@@ -190,7 +197,7 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                                 max_c_len = max(max_c_len, c_len)
                                 max_q_len = max(max_q_len, q_len)
                                 max_a_len = max(max_a_len, a_len)
-                                entry = [question, q_len, context, c_len, answers,a_len]
+                                entry = [question, q_len, context, c_len, context_features, len(context_features), answers,a_len]
                                 data_list.append(entry)
 
                                 raw_entry = [question_raw, context_raw, answer_raw]

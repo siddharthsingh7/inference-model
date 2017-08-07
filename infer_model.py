@@ -24,18 +24,27 @@ class InferModel(object):
         self.global_step = tf.get_variable('global_step', shape=[], dtype=tf.int32, initializer=tf.constant_initializer(0), trainable=False)
 
         N = self.config.batch_size
-        self.q = tf.placeholder(tf.int64, [N, None], name='q')
-        self.x = tf.placeholder(tf.int64, [N, None], name='x')
-        self.q_mask = tf.placeholder(tf.bool, [N, None], name='q_mask')
-        self.x_mask = tf.placeholder(tf.bool, [N, None], name='x_mask')
-        self.a = tf.placeholder(tf.int32, [N, None], name='a')
-        self.a_mask = tf.placeholder(tf.bool, [N, None], name='a_mask')
-        self.y = tf.placeholder(tf.int64, [N], name='y')
+        self.q = tf.placeholder(tf.int64, [None, None], name='q')
+        self.x = tf.placeholder(tf.int64, [None, None], name='x')
+        self.fx = tf.placeholder(tf.int64, [None, None], name ='fx')
+        self.q_mask = tf.placeholder(tf.bool, [None, None], name='q_mask')
+        self.x_mask = tf.placeholder(tf.bool, [None, None], name='x_mask')
+        self.fx_mask = tf.placeholder(tf.bool, [None, None], name='fx_mask')
+        self.a = tf.placeholder(tf.int32, [None, None], name='a')
+        self.a_mask = tf.placeholder(tf.bool, [None, None], name='a_mask')
+        self.y = tf.placeholder(tf.int64, [None], name='y')
         self.JX = tf.placeholder(tf.int32, shape=(), name='JX')
         self.JQ = tf.placeholder(tf.int32, shape=(), name='JQ')
         self.JA = tf.placeholder(tf.int32, shape=(), name='JA')
-        self.learning_rate = self.config.learning_rate
+        self.JFX = tf.placeholder(tf.int32, shape=(), name='JFX')
+        self.learning_rate = tf.placeholder(tf.float32,shape=(),name="learning_rate")
 
+        # Decay the learning rate exponentially based on the number of steps.
+        self.lr = tf.train.exponential_decay(self.learning_rate,
+                                             self.global_step,
+                                             self.config.num_per_decay,
+                                             self.config.decay_factor,
+                                             staircase=True)
         self.W = tf.get_variable('W',shape=(2*self.state_size, self.config.num_classes), dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
         self.b = tf.get_variable('b',shape=(self.config.num_classes), dtype=tf.float32, initializer=tf.constant_initializer(0))
 
@@ -44,25 +53,41 @@ class InferModel(object):
         with tf.variable_scope("infer"):
             question, context, answer = self.setup_embeddings()
             # [N,JQ,2d] , [N,JX,2d], [N,JA,2d]
+
+            with tf.variable_scope("aligned_embeddings"):
+                # TODO Add RELU layer
+                xx = tf.tile(tf.expand_dims(context,2),[1,1,self.JQ,1])
+                yy = tf.tile(tf.expand_dims(question,1),[1,self.JX,1,1])
+                alpha = tf.exp(tf.multiply(xx,yy))
+                sum_matrix = tf.tile(tf.reduce_sum(alpha,2,keep_dims=True),[1,1,self.JQ,1]) # [N,JX,JQ,d]
+                sum_matrix = sum_matrix - alpha
+                alpha = tf.divide(alpha, sum_matrix) # [N,JX,JQ,d]
+                aligned_embed = tf.reduce_sum(tf.multiply(alpha,yy),2,name="reduce_sum")
+                print("Q aligned_embed",aligned_embed)# [N, JX,d]
+
+            with tf.variable_scope("concatenate_context_embeddings"):
+                context = tf.add(context,aligned_embed) # TODO concatenate, instead of add
+                # Add context_features
+
             with tf.variable_scope("encoder"):
                 self.question_repr, self.context_repr, self.answer_repr = self.encode(question, context,
-                                                                                      answer, self.x_mask,
-                                                                                      self.q_mask, self.a_mask)
+                                                                                      answer, self.q_mask,
+                                                                                      self.x_mask, self.a_mask)
 
             with tf.variable_scope("attention_layer"):
-                state_fw,state_bw = tf.split(self.context_repr, 2, axis=2)
+                state_fw, state_bw = tf.split(self.context_repr, 2, axis=2)
                 attention_cell_fw = AttentionCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_fw,
-                                                  encoder_input_size=self.JX, encoder_mask=self.x_mask)
+                                                  encoder_input_size= self.JX, encoder_mask=self.x_mask)
                 attention_cell_bw = AttentionCell(state_size=self.state_size, state_is_tuple=True,
                                                   encoder_input=state_bw, encoder_input_size=self.JX, encoder_mask=self.x_mask)
- 
-                if self.config.dataset == 'squad':
+
+                if self.config.dataset == 'squadd':
                     attend_on = tf.concat([question, answer], 1)  # [N,JA+JQ,2*d]
                     attend_on_length_mask = tf.concat([self.q_mask, self.a_mask], 1)  #[N,JA+JQ]
                 else:
                     attend_on = question  # [N,JQ,2*d]
                     attend_on_length_mask = self.q_mask  #[N,JQ]
- 
+
                 self.attended_repr, _, _ = biLSTM(attend_on, attend_on_length_mask,
                                                   cell_fw=attention_cell_fw, cell_bw=attention_cell_bw,
                                                   dropout=self.config.dropout, state_size=self.config.state_size)  #[N,JQ,2*d]
@@ -89,12 +114,13 @@ class InferModel(object):
             self.accuracy = tf.reduce_mean(tf.cast(tf.equal(self.prediction, self.y), tf.float32))
 
             tf.summary.scalar('accuracy', self.accuracy)
-            self.train_op = tf.train.AdamOptimizer(self.learning_rate, beta1=0.9, beta2=0.999).minimize(self.loss)
+            self.train_op = tf.train.AdamOptimizer(self.lr, beta1=0.9, beta2=0.999).minimize(self.loss)
+
             grads = tf.gradients(self.loss, tf.trainable_variables())
             for var in tf.trainable_variables():
                 tf.summary.histogram(var.name.replace(':', '_'), var)
 
-            for grad in grads:
+            for grad in grads: # none issues
                 pass
 
             self.inc_step = self.global_step.assign_add(1)
@@ -122,7 +148,7 @@ class InferModel(object):
             layer2, _, _ = biLSTM(layer1, input_mask, self.config.state_size, dropout=self.config.dropout, scope=scope)
         return layer2
 
-    def encode(self, question, context, answer, context_mask, question_mask, answer_mask):
+    def encode(self, question, context, answer, question_mask, context_mask, answer_mask):
         """
         Returns encoded representation of inputs
         """
@@ -141,47 +167,49 @@ class InferModel(object):
 
         return question_repr, context_repr, answer_repr
 
-    def add_features(self, question, context, answer, question_mask, context_mask, answer_mask):
-        """
-        Exact match - binary features original,lemma or lowercase,
-        Token features - POS, NER, Term Frequency
-        """
-        pass
     def setup_embeddings(self):
         """
         return glove pretrained embeddings for inputs
-        TODO - finetune only top 1000 embedding
         """
         with tf.variable_scope("emb"), tf.device("/cpu:0"):
             question = tf.nn.embedding_lookup(self.word_emb_mat, self.q)
             context = tf.nn.embedding_lookup(self.word_emb_mat, self.x)
             answer = tf.nn.embedding_lookup(self.word_emb_mat, self.a)
-            question = tf.reshape(question, [self.config.batch_size, self.JQ, self.embedding_size])
-            context = tf.reshape(context, [self.config.batch_size, self.JX, self.embedding_size])
-            answer = tf.reshape(answer, [self.config.batch_size, self.JA, self.embedding_size])
+            #question = tf.reshape(question, [self.config.batch_size, self.JQ, self.embedding_size])
+            #context = tf.reshape(context, [self.config.batch_size, self.JX, self.embedding_size])
+            #answer = tf.reshape(answer, [self.config.batch_size, self.JA, self.embedding_size])
+            question = tf.reshape(question, [-1, self.JQ, self.embedding_size])
+            context = tf.reshape(context, [-1, self.JX, self.embedding_size])
+            answer = tf.reshape(answer, [-1, self.JA, self.embedding_size])
             return question, context, answer
 
     def create_feed_dict(self, question_batch, question_len_batch, context_batch, context_len_batch,
-                         ans_batch, ans_len_batch, label_batch=None):
+                         context_features_batch, context_features_len_batch, ans_batch, ans_len_batch, label_batch=None):
 
         feed_dict = {}
         JQ = np.max(question_len_batch)
         JX = np.max(context_len_batch)
         JA = np.max(ans_len_batch)
+        JFX = np.max(context_features_len_batch)
 
         question, question_mask = padding_batch(question_batch, JQ)
         context, context_mask = padding_batch(context_batch, JX)
         answer, answer_mask = padding_batch(ans_batch, JA)
+        context_features, context_features_mask = padding_batch(context_batch, JX)
 
         feed_dict[self.q] = question
         feed_dict[self.q_mask] = question_mask
         feed_dict[self.x] = context
         feed_dict[self.x_mask] = context_mask
+        feed_dict[self.fx] = context_features
+        feed_dict[self.fx_mask] = context_features_mask
         feed_dict[self.a] = answer
         feed_dict[self.a_mask] = answer_mask
         feed_dict[self.JQ] = JQ
         feed_dict[self.JX] = JX
         feed_dict[self.JA] = JA
+        feed_dict[self.JFX] = JFX
+        feed_dict[self.learning_rate] = self.config.learning_rate
         if label_batch is not None:
             feed_dict[self.y] = label_batch
         return feed_dict
