@@ -67,22 +67,41 @@ def biLSTM(inputs, mask, state_size, cell_fw=None,cell_bw=None,dropout=None,scop
         return concat_hidden_states, concat_final_state, (final_state_fw, final_state_bw)
 
 
-# TODO TREELSTM
+class TreeLSTMCell(tf.contrib.rnn.BasicLSTMCell):
+    '''
+    Child Sum LSTM Tree - Suitable for unordered trees
+    '''
+    def __init__(self,state_size,state_is_tuple):
+        super(TreeLSTMCell,self).__init__(state_size,state_is_tuple)
 
-# TODO BIMPM
+    def __call__(self,inputs,state):
+        c,h = state
+        #TODO
+        return (h,tf.contrib.rnn.LSTMStateTuple(c,h))
 
 def softmax_masked(scores, mask):
-    """
-    Used to calculcate a softmax score with true sequence length (without padding), rather than max-sequence length.
+    exp = tf.exp(scores - tf.reduce_max(scores, 1, keep_dims=True)) * mask
+    return tf.div(exp, tf.reduce_sum(exp, 1, keep_dims=True))
 
-    Input shape: (batch_size, max_seq_length, hidden_dim). 
-    mask parameter: Tensor of shape (batch_size, max_seq_length). Such a mask is given by the length() function.
-    """
-    numerator = tf.exp(tf.subtract(scores, tf.reduce_max(scores, 1, keep_dims=True))) * mask
-    denominator = tf.reduce_sum(numerator, 1, keep_dims=True)
-    weights = tf.div(numerator, denominator)
-    return weights
+#TODO MATCHLSTM Cell
+#TODO RECURRENT DROPOUT
 
+class ReReadLSTM(tf.contrib.rnn.BasicLSTMCell):
+    '''
+    Re-Read LSTM from https://www.aclweb.org/anthology/C/C16/C16-1270.pdf
+    '''
+    def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size,encoder_mask):
+        self.d = state_size
+        self.Y = encoder_input
+        self.enc_size = encoder_input_size
+        self.mask = encoder_mask
+        super(ReReadLSTM,self).__init__(state_size,state_is_tuple)
+
+    def __call__(Self,inputs,state,scope=None):
+        with tf.variable_scope("rereadLSTM"):
+            c,h = state
+
+        return (h,tf.contrib.rnn.LSTMStateTuple(c,h))
 
 class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
     def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size,encoder_mask):
@@ -99,7 +118,6 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
             m1 = tf.reshape(tf.matmul(tf.reshape(self.Y, [-1,self.d]),W_y),[-1,self.enc_size,self.d],name="m1")
             m2 = tf.expand_dims(tf.matmul(inputs, W_h) ,1,name="m2")
             M = tf.tanh(m1+m2)
-            #TODO masked softmask
             self.mask = tf.cast(self.mask,tf.float32)
             alpha = tf.reshape(tf.matmul(tf.reshape(M,[-1,self.d]),tf.expand_dims(w,1)),[-1,self.enc_size])
             print(alpha)
@@ -107,7 +125,7 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
             alpha = tf.nn.softmax(alpha,name="alpha")
             r = tf.reshape(tf.matmul(tf.expand_dims(alpha,1),self.Y),[-1,self.d])
             h_star = tf.tanh( tf.matmul(r,W_p) + tf.matmul(inputs,W_x))
-            return (h_star, tf.contrib.rnn.LSTMStateTuple(h_star,h_star))
+            return (h_star, tf.contrib.rnn.LSTMStateTuple(c,h_star))
 
     @staticmethod
     def get_weights(state_size):
@@ -121,50 +139,3 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
         w = tf.get_variable("w",shape=[state_size,],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initializer())
         return W_y,W_h,W_p,W_x,w
 
-'''
-class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
-    """
-    (arXiv:1509.06664) Reasoning about Entailment with Neural Attention
-    """
-    def __init__(self, state_size, state_is_tuple, encoder_input, encoder_input_size):
-        self._d = state_size
-        self._Y = encoder_input
-        self._enc_size = encoder_input_size
-        super(AttentionCell, self).__init__(state_size, state_is_tuple)
-
-    def __call__(self, inputs, state, scope):
-        with tf.variable_scope("attention_cell"):
-            W_y, W_h, W_p, W_x, w = self.get_weights(self.state_size)
-            m1 = tf.reshape(tf.matmul(tf.reshape(self.encoder_input, [-1, self.state_size]), W_y), [-1, self.encoder_input_size,self.state_size], name="m1")
-            m2 = tf.expand_dims(tf.matmul(inputs, W_h), 1, name="m2")
-            M = tf.tanh(m1+m2)
-            #TODO masked softmax
-            alpha = tf.nn.softmax(tf.reshape(tf.matmul(tf.reshape(M, [-1, self.state_size]), tf.expand_dims(w, 1)), [-1, self.encoder_input_size], name="alpha"))
-            r = tf.reshape(tf.matmul(tf.expand_dims(alpha, 1), self.encoder_input), [-1, self.state_size])
-            h_star = tf.tanh(tf.matmul(r, W_p) + tf.matmul(inputs, W_x))
-            return (h_star, state)
-
-    @staticmethod
-    def get_weights(state_size):
-        xavier_init = tf.contrib.layers.xavier_initializer()
-
-        W_y = tf.get_variable("W_y",shape=[state_size,state_size], dtype=tf.float32, initializer=xavier_init)
-        W_h = tf.get_variable("W_h",shape=[state_size,state_size], dtype=tf.float32, initializer=xavier_init)
-        W_p = tf.get_variable("W_p",shape=[state_size,state_size], dtype=tf.float32, initializer=xavier_init)
-        W_x = tf.get_variable("W_x",shape=[state_size,state_size], dtype=tf.float32, initializer=xavier_init)
-        w = tf.get_variable("w",shape=[state_size,], dtype=tf.float32, initializer=xavier_init)
-
-        return W_y, W_h, W_p, W_x, w
-
-    @property
-    def state_size(self):
-        return self._d
-
-    @property
-    def encoder_input(self):
-        return self._Y
-
-    @property
-    def encoder_input_size(self):
-        return self._enc_size
-'''

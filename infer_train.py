@@ -1,4 +1,3 @@
-
 import json
 import cmd
 from os.path import join
@@ -16,6 +15,7 @@ logging.basicConfig(level=logging.INFO)
 from data_util import minibatches
 from sklearn.metrics import classification_report, accuracy_score
 from tensorflow.python.platform import gfile
+from tensorflow.contrib.tensorboard.plugins import projector
 
 from ptpython.repl import embed
 
@@ -26,7 +26,7 @@ tf.app.flags.DEFINE_integer("num_per_decay", 6, "Epochs before reducing learning
 tf.app.flags.DEFINE_float("decay_factor", 0.01, "Decay factor")
 tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Norm for clipping gradients ")
 tf.app.flags.DEFINE_float("dropout", 0.8, "Dropout")
-tf.app.flags.DEFINE_float("l2_beta", 0.0001, "L2-beta")
+tf.app.flags.DEFINE_float("l2_beta", 0.00001, "L2-beta")
 tf.app.flags.DEFINE_integer("num_epochs", 10, "Number of epochs")
 tf.app.flags.DEFINE_integer("state_size", 100, "State Size")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Embedding Size")
@@ -61,6 +61,13 @@ class Trainer():
         self.summary_op = model.get_summary()
         self.train_writer = tf.summary.FileWriter('./temp/train/', graph=tf.get_default_graph())
         self.valid_writer = tf.summary.FileWriter('./temp/valid/', graph=tf.get_default_graph())
+        config = projector.ProjectorConfig()
+        embedding = config.embeddings.add()
+        embedding.tensor_name = self.model.word_emb_mat.name
+        embedding.metadata_path = './temp/embed.csv'
+        projector.visualize_embeddings(self.train_writer,config)
+        self.saver_embed = tf.train.Saver([self.model.word_emb_mat])
+
 
     def run_epoch(self, session, train_set, train_raw,epoch):
         total_batches = int(len(train_set) / self.config.batch_size)
@@ -73,6 +80,7 @@ class Trainer():
             session.run(self.model.inc_step)
             loss, accuracy, summary, global_step = self.train_single_batch(session,*batch)
             self.train_writer.add_summary(summary, global_step)
+            self.saver_embed.save(session, './temp/embedding_test.ckpt', 1)
             training_accuracy += accuracy
             training_loss += loss
         training_loss = training_loss/total_batches
@@ -86,24 +94,29 @@ class Trainer():
         input_feed  = self.model.create_feed_dict(q_batch,q_len_batch,c_batch,c_len_batch,
                                                   cf_batch,cf_len_batch,a_batch,a_len_batch,
                                                   label_batch=infer_label_batch)
-        output_feed = [self.model.train_op,self.loss,self.global_step,self.accuracy,self.summary_op]
-        _,loss,global_step,accuracy,summary = session.run(output_feed,feed_dict=input_feed)
+        output_feed = [self.model.train_op,self.loss,self.global_step,self.accuracy,self.summary_op,self.model.preds,self.model.q_aligned_attn,self.model.q_aligned_context]
+        _,loss,global_step,accuracy,summary,preds,e,f = session.run(output_feed,feed_dict=input_feed)
         return loss,accuracy,summary,global_step
 
     def validate(self,session,validation_set,validation_raw,epoch):
         total_batches = int(len(validation_set)/self.config.batch_size)
         validation_accuracy = 0.0
         validation_loss = 0.0
+        infer_label = []
+        prediction_all = []
         validate_minibatches = minibatches(validation_set,self.config.batch_size,self.config.dataset)
         for batch in tqdm(validate_minibatches,total=total_batches,desc="Validate"):
             if len(batch[0]) != self.config.batch_size:
                 continue
-            loss,accuracy,summary,global_step = self.validate_single_batch(session,*batch)
+            loss,accuracy,summary,global_step,infer_label_batch,prediction = self.validate_single_batch(session,*batch)
             self.valid_writer.add_summary(summary, global_step)
             validation_accuracy += accuracy
             validation_loss += loss
+            _ = [infer_label.append(x) for x in infer_label_batch]
+            _= [ prediction_all.append(x) for x in prediction]
         validation_loss = validation_loss/total_batches
         validation_accuracy = validation_accuracy/total_batches
+        print(classification_report(infer_label, prediction_all, target_names=['0','1']))
         print("Loss",validation_loss)
         print("Accuracy",validation_accuracy)
 
@@ -114,10 +127,9 @@ class Trainer():
                                                   label_batch=infer_label_batch)
         output_feed = [self.loss,self.global_step,self.accuracy,self.summary_op,self.model.prediction]
         loss,global_step,accuracy,summary_op,prediction = session.run(output_feed,feed_dict=input_feed)
-        print(classification_report(infer_label_batch, prediction, target_names=['0','1']))
         #print("prediction",prediction)
         #print("true",infer_label_batch)
-        return loss, accuracy, summary_op, global_step
+        return loss, accuracy, summary_op, global_step, infer_label_batch,prediction
 
     def interactive(self, session):
         interactive_sesh = InteractiveSess(self,session)
@@ -347,7 +359,7 @@ def train():
                 logging.info('-'*5 + "-VALIDATE-" + str(epoch)+ '-'*5)
                 trainer.validate(sess, valid_set, valid_raw, epoch)
 
-            trainer.interactive(sess)
+            #trainer.interactive(sess)
 def test():
     pass
 

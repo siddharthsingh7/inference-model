@@ -39,7 +39,6 @@ def negative_sampling(batches, minibatch_size):
     a_final_batch = []
     a_final_len_batch = []
     infer_label_batch = []
-
     for q, q_l, c, c_l, cf, cf_l,a, a_l in zip(*batches):
         q_final_batch.append(q)
         q_final_len_batch.append(q_l)
@@ -96,7 +95,7 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
     valid_pfx = join(source_dir, "val")
     dev_pfx = join(source_dir, "dev")
     if data_mode=="tiny":
-        max_train = 100
+        max_train = 500
         max_valid = 20
         max_dev = 20
 
@@ -164,20 +163,20 @@ def load_dataset(source_dir, data_mode, max_q_toss, max_c_toss, data_pfx_list=No
                             for line in l_file:
                                 label = list(map(int,line.strip().split(" ")))
                                 try:
-                                    context = list(map(int, c_file.readline().strip().split(" ")))
+                                    context_plus_features = list(map(int, c_file.readline().strip().split(" ")))
                                     question = list(map(int,q_file.readline().strip().split(" ")))
                                     context_raw = r_c_file.readline().strip().split(" ")
                                     question_raw = r_q_file.readline().strip().split(" ")
                                 except Exception as e:
                                     embed(globals(),locals())
-                                answers = list(map(int,context[label[0]:label[1]]))
+                                answers = list(map(int,context_plus_features[label[0]:label[1]]))
                                 answer_raw = context_raw[label[0]:label[1]]
-                                c_len = int(len(context)/4)
+                                c_len = int(len(context_plus_features)/4)
                                 q_len = len(question)
                                 a_len = len(answers)
 
-                                context = context[:c_len]
-                                context_features = context[c_len:]
+                                context = context_plus_features[:c_len]
+                                context_features = context_plus_features[c_len:]
                                 # Do not toss out, only  truncate for dev set
                                 if q_len > max_q_toss:
                                     if data_pfx == dev_pfx:
