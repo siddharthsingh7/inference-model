@@ -4,7 +4,7 @@ import tensorflow as tf
 import logging
 import tqdm
 from sklearn.metrics import classification_report,accuracy_score
-from cell import biLSTM, AttentionCell,get_last_layer,padding_batch
+from cell import biLSTM, AttentionCell, MatchLSTMCell, get_last_layer,padding_batch
 from data_util import minibatches
 from sklearn.metrics import classification_report,accuracy_score
 
@@ -87,9 +87,9 @@ class InferModel(object):
 
             with tf.variable_scope("question_over_context"):
                 state_fw, state_bw = tf.split(self.context_repr, 2, axis=2)
-                attention_cell_fw = AttentionCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_fw,
+                attention_cell_fw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_fw,
                                                   encoder_input_size= self.JX, encoder_mask=self.x_mask)
-                attention_cell_bw = AttentionCell(state_size=self.state_size, state_is_tuple=True,
+                attention_cell_bw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True,
                                                   encoder_input=state_bw, encoder_input_size=self.JX, encoder_mask=self.x_mask)
                 self.config.include_answer = False
                 if self.config.include_answer:
