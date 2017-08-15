@@ -354,7 +354,8 @@ def train():
                 logging.info('-'*5 + "-VALIDATE-" + str(epoch)+ '-'*5)
                 trainer.validate(sess, valid_set, valid_raw, epoch)
                 #TODO early stopping
-                save_path = saver.save(sess,"./temp/model.ckpt")
+                print("Saving Model")
+                save_path = saver.save(sess,"./temp/{}/model.ckpt".format(FLAGS.dataset))
 
 def test():
     pass
