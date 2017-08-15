@@ -99,6 +99,8 @@ class InferModel(object):
                 else:
                     attend_on = question  # [N,JQ,2*d]
                     attend_on_length_mask = self.q_mask  #[N,JQ]
+
+                '''
                 infer_gru = tf.contrib.rnn.GRUCell(2*self.config.state_size)
                 infer_seq_len = tf.reshape(tf.reduce_sum(tf.cast(self.q_mask, 'int32'), axis=1), [-1, ])
                 self.infer_state = get_last_layer(self.question_repr,infer_seq_len-1)
@@ -115,7 +117,11 @@ class InferModel(object):
                     #reduced_attention = tf.reduce_sum(self.attended_repr,2)#check this
                     #self.final_infer_state,self.infer_state = infer_gru(reduced_attention,self.infer_state)
                     scope.reuse_variables()
-
+                '''
+                self.attended_repr, _, _ = biLSTM(attend_on, attend_on_length_mask,
+                                                  cell_fw=attention_cell_fw, cell_bw=attention_cell_bw,
+                                                  dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
+                self.final_infer_state = self.attended_repr
             with tf.variable_scope("context_over_question"):
                 pass
 
