@@ -156,9 +156,9 @@ class InferModel(object):
 
             self.loss = self.setup_loss(self.logits, self.final_mask)
 
-            tf.summary.histogram('logits', self.logits)
+            #tf.summary.histogram('logits', self.logits)
             self.prediction = tf.argmax(self.pred_softmax, 1,name="prediction")
-            tf.summary.histogram('prediction', self.prediction)
+            #tf.summary.histogram('prediction', self.prediction)
 
             self.accuracy = tf.reduce_mean(tf.cast(tf.equal(self.prediction, self.y), tf.float32))
 
@@ -167,8 +167,8 @@ class InferModel(object):
 
             grads = tf.gradients(self.loss, tf.trainable_variables())
 
-            for var in tf.trainable_variables():
-                tf.summary.histogram(var.name.replace(':', '_'), var)
+            #for var in tf.trainable_variables():
+            #    tf.summary.histogram(var.name.replace(':', '_'), var)
 
             for grad in grads: # none issues
                 pass

@@ -324,6 +324,7 @@ def train():
         config = tf.ConfigProto()
         config.allow_soft_placement = True
         config.gpu_options.per_process_gpu_memory_fraction = FLAGS.gpu_fraction
+        config.gpu_options.allow_growth = True
         with tf.Session(config=config) as sess:
             logging.info("Created model with fresh parameters.")
             sess.run(tf.global_variables_initializer())
