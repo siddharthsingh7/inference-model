@@ -7,7 +7,7 @@ import tensorflow as tf
 import nltk
 from os.path import join
 from tqdm import tqdm
-from data_util import load_glove_embeddings, load_dataset
+from data_util import load_glove_embeddings, load_dataset, load_dontknow_dataset
 from cell import padding_batch
 from infer_model import InferModel
 import logging
@@ -16,6 +16,7 @@ from data_util import minibatches
 from sklearn.metrics import classification_report, accuracy_score
 from tensorflow.python.platform import gfile
 from tensorflow.contrib.tensorboard.plugins import projector
+import matplotlib.pyplot as plt
 
 from ptpython.repl import embed
 
@@ -33,11 +34,12 @@ tf.app.flags.DEFINE_integer("embedding_size", 100, "Embedding Size")
 tf.app.flags.DEFINE_integer("max_question_length", 60, "Maximum Question Length")
 tf.app.flags.DEFINE_integer("max_context_length", 300, "Maximum Context Length")
 tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size")
+tf.app.flags.DEFINE_integer("num_hops", 2, "Number of hops")
 tf.app.flags.DEFINE_integer("gpu_id", 0, "gpu id")
 tf.app.flags.DEFINE_float("gpu_fraction", 0.8, " % of GPU memory used.")
 tf.app.flags.DEFINE_integer("num_classes", 2, "number of classes")
 tf.app.flags.DEFINE_string("dataset", "squad", "squad/dontknow")
-tf.app.flags.DEFINE_string("mode", "train", "train/test")
+tf.app.flags.DEFINE_string("mode", "train", "train/interactive/test")
 FLAGS = tf.app.flags.FLAGS
 
 
@@ -68,23 +70,27 @@ class Trainer():
         projector.visualize_embeddings(self.train_writer,config)
         self.saver_embed = tf.train.Saver([self.model.word_emb_mat])
 
-
     def run_epoch(self, session, train_set, train_raw,epoch):
         total_batches = int(len(train_set) / self.config.batch_size)
         train_minibatches = minibatches(train_set, self.config.batch_size, self.config.dataset)
         training_loss = 0.0
         training_accuracy = 0.0
+        infer_label = []
+        prediction_all = []
         for batch in tqdm(train_minibatches, desc="Trainings", total=total_batches):
             if len(batch[0]) != self.config.batch_size:
                 continue
             session.run(self.model.inc_step)
-            loss, accuracy, summary, global_step = self.train_single_batch(session,*batch)
+            loss, accuracy, summary, global_step, infer_label_batch,prediction = self.train_single_batch(session,*batch)
+            _ = [infer_label.append(x) for x in infer_label_batch]
+            _= [ prediction_all.append(x) for x in prediction]
             self.train_writer.add_summary(summary, global_step)
             self.saver_embed.save(session, './temp/embedding_test.ckpt', 1)
             training_accuracy += accuracy
             training_loss += loss
         training_loss = training_loss/total_batches
         training_accuracy = training_accuracy/total_batches
+        print(classification_report(infer_label, prediction_all, target_names=['can\'t','can']))
         print("Loss", training_loss)
         print("Accuracy", training_accuracy)
 
@@ -94,9 +100,9 @@ class Trainer():
         input_feed  = self.model.create_feed_dict(q_batch,q_len_batch,c_batch,c_len_batch,
                                                   cf_batch,cf_len_batch,a_batch,a_len_batch,
                                                   label_batch=infer_label_batch)
-        output_feed = [self.model.train_op,self.loss,self.global_step,self.accuracy,self.summary_op,self.model.preds,self.model.q_aligned_attn,self.model.q_aligned_context]
-        _,loss,global_step,accuracy,summary,preds,e,f = session.run(output_feed,feed_dict=input_feed)
-        return loss,accuracy,summary,global_step
+        output_feed = [self.model.train_op,self.loss,self.global_step,self.accuracy,self.summary_op,self.model.prediction,self.model.q_aligned_attn,self.model.q_aligned_context]
+        _,loss,global_step,accuracy,summary,prediction,e,f = session.run(output_feed,feed_dict=input_feed)
+        return loss,accuracy,summary,global_step,infer_label_batch,prediction
 
     def validate(self,session,validation_set,validation_raw,epoch):
         total_batches = int(len(validation_set)/self.config.batch_size)
@@ -116,7 +122,7 @@ class Trainer():
             _= [ prediction_all.append(x) for x in prediction]
         validation_loss = validation_loss/total_batches
         validation_accuracy = validation_accuracy/total_batches
-        print(classification_report(infer_label, prediction_all, target_names=['0','1']))
+        print(classification_report(infer_label, prediction_all, target_names=['can\'t','can']))
         print("Loss",validation_loss)
         print("Accuracy",validation_accuracy)
 
@@ -131,46 +137,88 @@ class Trainer():
         #print("true",infer_label_batch)
         return loss, accuracy, summary_op, global_step, infer_label_batch,prediction
 
-    def interactive(self, session):
-        interactive_sesh = InteractiveSess(self,session)
-        interactive_sesh.cmdloop()
-
-    def predict_single_batch(self, session, *batch):
-        pass
-
-    def predict_single(self, session, *batch):
-        self.model.config.batch_size = 1
-        q_batch,q_len_batch,c_batch,c_len_batch,cf_batch,cf_len_batch,a_batch,a_len_batch = batch[0]
-        input_feed  = self.model.create_feed_dict([q_batch],[q_len_batch],[c_batch],[c_len_batch],
-                                                  [cf_batch],[cf_len_batch],[a_batch],[a_len_batch]
-                                                  ,label_batch=None)
-
-        output_feed = [self.model.prediction,self.model.logits]
-        probs = []
-        embed(globals(),locals())
-        for _ in range(20):
-            probs.append(session.run(output_feed,feed_dict=input_feed))
-        '''
-        predictive_mean = np.mean(probs, axis=0)
-        predictive_variance = np.var(probs, axis=0)
-        tau = l**2 * (1 - self.model.learning_rate) / (2 * N * self.model.decay_rate)
-        predictive_variance += tau**-1
-        '''
-
-        infer = session.run(output_feed,feed_dict=input_feed)[0]
-        return infer[0]
 
 
 class InteractiveSess(cmd.Cmd):
 
-    def __init__(self, trainer, session):
+    def __init__(self, config, session):
         self.context = ''
         self.question = ''
         self.inference = ''
         self.session = session
-        self.trainer = trainer
-
+        self.graph = None
+        self.config = config
         super(InteractiveSess, self).__init__()
+
+    def create_feed_dict(self, question_batch, question_len_batch, context_batch, context_len_batch,
+                         context_features_batch, context_features_len_batch, ans_batch, ans_len_batch, label_batch=None):
+
+        feed_dict = {}
+        q = self.graph.get_tensor_by_name("q:0")
+        q_mask = self.graph.get_tensor_by_name("q_mask:0")
+        x = self.graph.get_tensor_by_name("x:0")
+        x_mask = self.graph.get_tensor_by_name("x_mask:0")
+        fx = self.graph.get_tensor_by_name("fx:0")
+        fx_mask = self.graph.get_tensor_by_name("fx_mask:0")
+        a = self.graph.get_tensor_by_name("a:0")
+        a_mask = self.graph.get_tensor_by_name("a_mask:0")
+        y = self.graph.get_tensor_by_name("y:0")
+        JX = self.graph.get_tensor_by_name("JX:0")
+        JQ = self.graph.get_tensor_by_name("JQ:0")
+        JFX = self.graph.get_tensor_by_name("JFX:0")
+        JA = self.graph.get_tensor_by_name("JA:0")
+        keep_prob = self.graph_get_tensor_by_name("keep_prob:0")
+
+        jq = np.max(question_len_batch)
+        jx = np.max(context_len_batch)
+        ja = np.max(ans_len_batch)
+        jfx = np.max(context_features_len_batch)
+        keep_prob = 1.0
+        question, question_mask = padding_batch(question_batch, jq)
+        context, context_mask = padding_batch(context_batch, jx)
+        answer, answer_mask = padding_batch(ans_batch, ja)
+        context_features, context_features_mask = padding_batch(context_features_batch, 3*jx)
+
+        feed_dict[q] =question
+        feed_dict[q_mask] = question_mask
+        feed_dict[x] = context
+        feed_dict[x_mask] = context_mask
+        feed_dict[fx] = context_features
+        feed_dict[fx_mask] = context_features_mask
+        feed_dict[a] = answer
+        feed_dict[a_mask] = answer_mask
+        feed_dict[JQ] = jq
+        feed_dict[JX] = jx
+        feed_dict[JA] = ja
+        feed_dict[JFX] = jfx
+        if label_batch is not None:
+            feed_dict[y] = label_batch
+        return feed_dict
+
+    def predict_single(self, session, *batch):
+        q_batch,q_len_batch,c_batch,c_len_batch,cf_batch,cf_len_batch,a_batch,a_len_batch = batch[0]
+        input_feed  = self.create_feed_dict([q_batch],[q_len_batch],[c_batch],[c_len_batch],
+                                                  [cf_batch],[cf_len_batch],[a_batch],[a_len_batch]
+                                                  ,label_batch=None)
+        probs = []
+        output_feed = [self.graph.get_tensor_by_name("infer/question_over_context/attention_matrix:0")]
+        for _ in range(20):
+            embed(globals(),locals())
+            output_feed = [self.graph.get_tensor_by_name("infer/pred_softmax:0"), self.graph.get_tensor_by_name("infer/prediction:0")]
+            a, b, c, d  = session.run(output_feed, feed_dict=input_feed)
+            attention = tf.get_collection("matchlstm_attention")
+            probs.append(a[0][int(b[0])])
+
+        predictive_mean = np.mean(probs, axis=0)
+        predictive_variance = np.var(probs, axis=0)
+        tau = l**2 * (1 - self.config.learning_rate) / (2 * N * self.config.decay_rate)
+        predictive_variance += tau**-1
+
+        # visualize attention
+
+        embed(globals(),locals())
+        return b[0]
+
 
 
     def sent_token_ids(self, vocab, sentence):
@@ -182,17 +230,8 @@ class InteractiveSess(cmd.Cmd):
 
     def process_input(self):
         single_set, single_raw = [], []
-        POS_TAGS = [] # for now, run preprocessing again to get pos_vocab
         vocab,_ = initialize_vocab(join('./data/squad_features/vocab.dat'))
 
-
-        def pos_id(x):
-            '''
-            returns an id for pos_tag, uses POS_TAG
-            '''
-            if x not in POS_TAGS:
-                POS_TAGS.append(x)
-            return POS_TAGS.index(x)
 
         wordnet_lemmatizer = nltk.stem.WordNetLemmatizer()
         q = [] # q,q_len,c,c_len,a,a_len
@@ -209,10 +248,6 @@ class InteractiveSess(cmd.Cmd):
 
         _ = [c.append(x) for x in self.sent_token_ids(vocab, self.context)]
         _ = [q.append(x) for x in self.sent_token_ids(vocab, self.question)]
-        #pos1 = nltk.pos_tag(self.context)
-        #_ = [c.append(pos_id(x)) for (y,x) in pos1]
-        #pos2 = nltk.pos_tag(self.question)
-        #_ = [q.append(pos_id(x)) for (y,x) in pos2]
 
         _ = [f.append(1) if x in tokens2 else f.append(0) for x in tokens1]
         _ = [f.append(1) if x in lemmas2 else f.append(0) for x in lemmas1]
@@ -222,9 +257,9 @@ class InteractiveSess(cmd.Cmd):
         return single_set, single_raw
 
     def run_inference(self):
-
+        self.graph = tf.get_default_graph()
         test_set, test_raw = self.process_input()
-        self.inference = self.trainer.predict_single(self.session, test_set, test_raw)
+        self.inference = self.predict_single(self.session, test_set, test_raw)
 
     def do_context(self, text):
         """
@@ -263,68 +298,28 @@ class Tester():
         pass
 
 
-def load_dontknow_dataset(data_size, max_question_length, max_context_length):
-    train_data = join("data","dont_know","dn_features.train")
-    dev_data = join("data","dont_know","dn_features.dev")
-    train = []
-    valid = []
-
-    def convert2int(x):
-        if x == ' ' or x == '':
-            pass
-        else:
-            return(int(x))
-    with gfile.GFile(train_data, 'r') as f:
-        for line in f:
-            line = line.strip().replace('[', '').replace(']', '')
-            tokens = line.split(", ';;;',") # Hacky.. #TODO fix the preprocessing script
-            data = [list(map(int, x.strip().split(','))) for x in tokens]
-            #   data = sent1,sent2,pos1,pos2,sim_word,sim_lemma,sim_lower,label
-            #sent1 = data[0] + data[2] + data[4] + data[5] + data[6] + data[7]# sent1 + pos1 +  + sim_word + sim_lemma + sim_lower
-            sent1 = data[0] # sent1
-            f_sent1 = data[4] + data[5] + data[6] # sim_word + sim_lemma + sim_lower
-            sent2 = data[1] # + data[3] #removing pos info
-            label = data[-1]
-            train.append([sent1, len(sent1), sent2, len(sent2), f_sent1,len(f_sent1), [], 0, label[0]])
-
-
-    with gfile.GFile(dev_data, 'r') as f:
-        for line in f:
-            line = line.strip().replace('[', '').replace(']', '')
-            tokens = line.split(", ';;;',") # Hacky.. #TODO fix the preprocessing script
-            data = [list(map(int, x.strip().split(','))) for x in tokens]
-            #   data = sent1,sent2,pos1,pos2,sim_word,sim_lemma,sim_lower,label
-            sent1 = data[0] # sent1
-            f_sent1 = data[4] + data[5] + data[6] # sim_word + sim_lemma + sim_lower
-            sent2 = data[1] # + data[3] #removing pos info
-            label = data[-1]
-            valid.append([sent1, len(sent1), sent2, len(sent2), f_sent1,len(f_sent1), [], 0, label[0]])
-
-    if data_size=="tiny":
-        train = train[:100]
-        valid = valid[:10]
-
-    dataset = {"training":train, "validation":valid,"training_raw":[],"validation_raw":[]}
-    return dataset
 
 def train():
     if FLAGS.dataset == 'dontknow':
         dataset = load_dontknow_dataset(FLAGS.data_size,FLAGS.max_question_length,FLAGS.max_context_length)
-        embed_path = join("data","dont_know","glove.trimmed.100.npz")
-        vocab_path = join("data","dont_know", "vocab.dat")
-        vocab, rev_vocab = initialize_vocab(vocab_path)
-        embeddings = load_glove_embeddings(embed_path)
-
-    else:
-        dataset = load_dataset(FLAGS.data_dir,FLAGS.data_size,FLAGS.max_question_length,FLAGS.max_context_length)
-        embed_path = join("data", "squad", "glove.trimmed.100.npz")
+        embed_path = join(FLAGS.data_dir,"glove.trimmed.100.npz")
         vocab_path = join(FLAGS.data_dir, "vocab.dat")
         vocab, rev_vocab = initialize_vocab(vocab_path)
         embeddings = load_glove_embeddings(embed_path)
 
+    elif FLAGS.dataset == 'squad':
+        dataset = load_dataset(FLAGS.data_dir,FLAGS.data_size,FLAGS.max_question_length,FLAGS.max_context_length)
+        embed_path = join(FLAGS.data_dir, "glove.trimmed.100.npz")
+        vocab_path = join(FLAGS.data_dir, "vocab.dat")
+        vocab, rev_vocab = initialize_vocab(vocab_path)
+        embeddings = load_glove_embeddings(embed_path)
+    else:
+        print("enter squad or dontknow for dataset flag")
+        return
     model = InferModel(FLAGS, embeddings, vocab)
 
     trainer = Trainer(model,FLAGS)
+    saver = tf.train.Saver()
 
     with tf.device("/gpu:{}".format(FLAGS.gpu_id)):
         config = tf.ConfigProto()
@@ -358,16 +353,30 @@ def train():
                 trainer.run_epoch(sess, train_set, train_raw, epoch)
                 logging.info('-'*5 + "-VALIDATE-" + str(epoch)+ '-'*5)
                 trainer.validate(sess, valid_set, valid_raw, epoch)
+                #TODO early stopping
+                save_path = saver.save(sess,"./temp/model.ckpt")
 
-            #trainer.interactive(sess)
 def test():
     pass
+
+def interactive():
+    with tf.device("/gpu:{}".format(FLAGS.gpu_id)):
+        config = tf.ConfigProto()
+        config.allow_soft_placement = True
+        config.gpu_options.per_process_gpu_memory_fraction = FLAGS.gpu_fraction
+        with tf.Session(config=config) as sess:
+            saver = tf.train.import_meta_graph('./temp/model.ckpt.meta')
+            saver.restore(sess, tf.train.latest_checkpoint('./temp'))
+            interactive_sesh = InteractiveSess(FLAGS,sess)
+            interactive_sesh.cmdloop()
+
 
 def main(_):
     if FLAGS.mode == 'train':
         train()
     elif FLAGS.mode == 'test':
         test()
-
+    elif FLAGS.mode == 'interactive':
+        interactive()
 if __name__ == "__main__":
     tf.app.run()

@@ -53,9 +53,8 @@ def biLSTM(inputs, mask, state_size, cell_fw=None,cell_bw=None,dropout=None,scop
             cell_fw = tf.contrib.rnn.LSTMCell(num_units=state_size, state_is_tuple=True)
             cell_bw = tf.contrib.rnn.LSTMCell(num_units=state_size, state_is_tuple=True)
 
-        if dropout:
-            cell_fw = tf.contrib.rnn.DropoutWrapper(cell_fw, output_keep_prob=dropout)
-            cell_fw = tf.contrib.rnn.DropoutWrapper(cell_fw, output_keep_prob=dropout)
+        cell_fw = tf.contrib.rnn.DropoutWrapper(cell_fw, output_keep_prob=dropout)
+        cell_fw = tf.contrib.rnn.DropoutWrapper(cell_fw, output_keep_prob=dropout)
 
         seq_len = tf.reshape(tf.reduce_sum(tf.cast(mask, 'int32'), axis=1), [-1, ])
 
@@ -107,6 +106,7 @@ class MatchLSTMCell(tf.contrib.rnn.BasicLSTMCell):
     '''
     MatchLSTMCell from  arXiv:1608.07905v2
     '''
+    attention = 0
     def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size,encoder_mask):
         self.d = state_size
         self.Y = encoder_input
@@ -122,7 +122,8 @@ class MatchLSTMCell(tf.contrib.rnn.BasicLSTMCell):
             F_part2 = tf.expand_dims(tf.matmul(h, W_a) + b_a, 1)
             F = tf.tanh(F_part1 + F_part2)
             pre_softmax_score = tf.reshape(tf.matmul(tf.reshape(F, [-1, self.d]), tf.expand_dims(v, 1)), [-1, self.enc_size]) + b
-            beta = tf.nn.softmax(pre_softmax_score)
+            beta = tf.nn.softmax(pre_softmax_score,name="beta")
+            tf.add_to_collection("matchlstm_attention",beta)
             h_beta = tf.reshape(tf.matmul(tf.expand_dims(beta, 1), self.Y), [-1, self.d])
             return (h_beta, tf.contrib.rnn.LSTMStateTuple(c,h_beta))
 
@@ -133,30 +134,14 @@ class MatchLSTMCell(tf.contrib.rnn.BasicLSTMCell):
         zero_init = tf.constant_initializer(0)
         V = tf.get_variable("V",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
         W_a = tf.get_variable("W_a",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
-        b_a = tf.get_variable("b_a",shape=[state_size,],dtype=tf.float32,initializer=zero_init)
+        b_a = tf.get_variable("bias_a",shape=[state_size,],dtype=tf.float32,initializer=zero_init)
         v = tf.get_variable("v",shape=[state_size,],dtype=tf.float32,initializer=zero_init)
-        b = tf.get_variable("b",shape=[],dtype=tf.float32,initializer=zero_init)
+        b = tf.get_variable("bias",shape=[],dtype=tf.float32,initializer=zero_init)
         return V, W_a, b_a, v, b
 
 
 #TODO RECURRENT DROPOUT
 
-class ReReadLSTM(tf.contrib.rnn.BasicLSTMCell):
-    '''
-    Re-Read LSTM from https://www.aclweb.org/anthology/C/C16/C16-1270.pdf
-    '''
-    def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size,encoder_mask):
-        self.d = state_size
-        self.Y = encoder_input
-        self.enc_size = encoder_input_size
-        self.mask = encoder_mask
-        super(ReReadLSTM,self).__init__(state_size,state_is_tuple)
-
-    def __call__(self,inputs,state,scope=None):
-        with tf.variable_scope("rereadLSTM"):
-            c,h = state
-
-        return (h,tf.contrib.rnn.LSTMStateTuple(c,h))
 
 class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
     def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size,encoder_mask):

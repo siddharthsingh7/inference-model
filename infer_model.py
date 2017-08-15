@@ -38,7 +38,7 @@ class InferModel(object):
         self.JA = tf.placeholder(tf.int32, shape=(), name='JA')
         self.JFX = tf.placeholder(tf.int32, shape=(), name='JFX')
         self.learning_rate = tf.placeholder(tf.float32,shape=(),name="learning_rate")
-
+        self.keep_prob = tf.placeholder(tf.float32,shape=(),name="keep_prob")
         # Decay the learning rate exponentially based on the number of steps.
         self.lr = tf.train.exponential_decay(self.learning_rate,
                                              self.global_step,
@@ -80,12 +80,13 @@ class InferModel(object):
                 question_repr_t = tf.transpose(self.question_repr,[0,2,1]) #[N,2d,JQ]
                 aligned_attention = tf.exp(tf.matmul(self.context_repr,question_repr_t)) #[N,JX,JQ]
                 aligned_attention_sum = tf.tile(tf.reduce_sum(aligned_attention,axis=2,keep_dims=True),[1,1,self.JQ])
-                self.q_aligned_attn = tf.divide(aligned_attention,tf.subtract(aligned_attention_sum,aligned_attention)) #[N,JX,JQ]
+                self.q_aligned_attn = tf.divide(aligned_attention,tf.subtract(aligned_attention_sum,aligned_attention),name="q_alignments") #[N,JX,JQ]
                 self.q_aligned_context = tf.multiply(self.context_repr, tf.reduce_sum(self.q_aligned_attn,2,keep_dims=True)) #[N,JX,2d]
 
             self.context_repr = tf.add(self.context_repr,self.q_aligned_context)
 
-            with tf.variable_scope("question_over_context"):
+            # Multiple hops over attention (ReasoNet)
+            with tf.variable_scope("question_over_context") as scope:
                 state_fw, state_bw = tf.split(self.context_repr, 2, axis=2)
                 attention_cell_fw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_fw,
                                                   encoder_input_size= self.JX, encoder_mask=self.x_mask)
@@ -98,10 +99,23 @@ class InferModel(object):
                 else:
                     attend_on = question  # [N,JQ,2*d]
                     attend_on_length_mask = self.q_mask  #[N,JQ]
+                infer_gru = tf.contrib.rnn.GRUCell(2*self.config.state_size)
+                infer_seq_len = tf.reshape(tf.reduce_sum(tf.cast(self.q_mask, 'int32'), axis=1), [-1, ])
+                self.infer_state = get_last_layer(self.question_repr,infer_seq_len-1)
+                for i in range(self.config.num_hops):
+                    print("hop %d"%i)
+                    self.attended_repr, _, _ = biLSTM(attend_on, attend_on_length_mask,
+                                                      cell_fw=attention_cell_fw, cell_bw=attention_cell_bw,
+                                                      dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
 
-                self.attended_repr, _, _ = biLSTM(attend_on, attend_on_length_mask,
-                                                  cell_fw=attention_cell_fw, cell_bw=attention_cell_bw,
-                                                  dropout=self.config.dropout, state_size=self.config.state_size)  #[N,JQ,2*d]
+                    #TODO add query over context
+                    concat_attention = tf.cast(tf.get_collection("matchlstm_attention")[0],dtype=tf.float16,name="attention_matrix")
+
+                    self.final_infer_state,self.infer_state = tf.nn.dynamic_rnn(infer_gru,self.attended_repr,sequence_length=infer_seq_len,initial_state=self.infer_state,dtype=tf.float32)
+                    #reduced_attention = tf.reduce_sum(self.attended_repr,2)#check this
+                    #self.final_infer_state,self.infer_state = infer_gru(reduced_attention,self.infer_state)
+                    scope.reuse_variables()
+
             with tf.variable_scope("context_over_question"):
                 pass
 
@@ -111,32 +125,33 @@ class InferModel(object):
                 '''
                 attended_repr_t = tf.transpose(self.attended_repr,[0,2,1])
                 self.self_alignment = tf.matmul(self.attended_repr,attended_repr_t) # [N,JQ,JQ]
-                diag = tf.ones([self.config.batch_size,self.JQ])
-                self.self_alignment = tf.transpose(tf.matrix_set_diag(self.self_alignment,diag),[0,2,1])
-                self.self_qalign_repr = tf.matmul(self.self_alignment,self.question_repr)
+                diag = tf.ones_like(tf.cast(self.q_mask,tf.float32))
+                self.self_alignment = tf.transpose(tf.matrix_set_diag(self.self_alignment,diag),[0,2,1],name="self_alignment")
+                self.self_qalign_repr = tf.matmul(self.self_alignment,self.question_repr,name="qalign")
 
             with tf.variable_scope("aggregation_layer"):
-                self.final_layer = tf.concat([self.attended_repr,self.self_qalign_repr],1)
-                self.final_mask = tf.concat([self.q_mask,self.q_mask],1)
+                self.final_layer = tf.concat([self.final_infer_state,self.self_qalign_repr,self.final_infer_state * self.self_qalign_repr, self.final_infer_state - self.self_qalign_repr],1)
+                self.final_mask = tf.concat([self.q_mask,self.q_mask,self.q_mask,self.q_mask],1)
 
-            # Multiple hops over attention (Episodic Memory)
-            with tf.variable_scope("multihop_layer"):
-                pass
+            self.config.use_decoder = True
+            if self.config.use_decoder:
+                self.decode_repr = self.decode(self.final_layer,self.final_mask)
+                decode_len = tf.reshape(tf.reduce_sum(tf.cast(self.final_mask, tf.int32), axis=1), [-1, ])
+            else:
+                self.decode_repr = self.final_layer
+                decode_len = tf.reshape(tf.reduce_sum(tf.cast(self.final_mask, tf.int32), axis=1), [-1, ])
 
-            self.decode_repr = self.decode(self.final_layer,self.final_mask)
-
-            decode_len = tf.reshape(tf.reduce_sum(tf.cast(self.final_mask, tf.int32), axis=1), [-1, ])
             self.preds = get_last_layer(self.decode_repr, decode_len-1)
 
             with tf.variable_scope("MLP_layer"):
                 self.logits = tf.contrib.layers.fully_connected(self.preds, self.config.num_classes, activation_fn=None)
 
-            self.prediction = tf.nn.softmax(self.logits)
+            self.pred_softmax= tf.nn.softmax(self.logits, name="pred_softmax")
 
             self.loss = self.setup_loss(self.logits, self.final_mask)
 
             tf.summary.histogram('logits', self.logits)
-            self.prediction = tf.argmax(self.prediction, 1)
+            self.prediction = tf.argmax(self.pred_softmax, 1,name="prediction")
             tf.summary.histogram('prediction', self.prediction)
 
             self.accuracy = tf.reduce_mean(tf.cast(tf.equal(self.prediction, self.y), tf.float32))
@@ -160,7 +175,7 @@ class InferModel(object):
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=onehot_labels))
         #loss = tf.reduce_mean(tf.losses.hinge_loss(logits=logits, labels=onehot_labels))#used without softmax
         #loss =  tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,labels=onehot_labels))
-        weights = [v for v in tf.trainable_variables() if 'weight' in v.name]
+        weights = [v for v in tf.trainable_variables() if 'bias' not in v.name]
         l2_loss = tf.add_n([tf.nn.l2_loss(weight) for weight in weights])
         loss = loss + self.config.l2_beta * l2_loss
         tf.summary.scalar('loss', loss)
@@ -172,10 +187,10 @@ class InferModel(object):
         Couple of bilstm layers stacked
         """
         with tf.variable_scope("decoder_layer1") as scope:
-            layer1, _, _ = biLSTM(input, input_mask, self.config.state_size, dropout=self.config.dropout, scope=scope)
+            layer1, _, _ = biLSTM(input, input_mask, self.config.state_size, dropout=self.keep_prob, scope=scope)
 
         with tf.variable_scope("decoder_layer2") as scope:
-            layer2, _, _ = biLSTM(layer1, input_mask, self.config.state_size, dropout=self.config.dropout, scope=scope)
+            layer2, _, _ = biLSTM(layer1, input_mask, self.config.state_size, dropout=self.keep_prob, scope=scope)
         return layer2
 
     def encode(self, dist, mask, scope):
@@ -185,7 +200,7 @@ class InferModel(object):
         #TODO share parmeters, to learn similar representations
         with tf.variable_scope(scope):
             print('-'*5 + scope + '-'*5)
-            repr, _, _ = biLSTM(dist,mask, dropout=self.config.dropout, state_size=self.config.state_size, scope=scope)
+            repr, _, _ = biLSTM(dist,mask, dropout=self.keep_prob, state_size=self.config.state_size, scope=scope)
             print(repr)
         return repr
 
@@ -237,6 +252,7 @@ class InferModel(object):
         feed_dict[self.JA] = JA
         feed_dict[self.JFX] = JFX
         feed_dict[self.learning_rate] = self.config.learning_rate
+        feed_dict[self.keep_prob] = self.config.dropout
         if label_batch is not None:
             feed_dict[self.y] = label_batch
         #TODO train_flag
