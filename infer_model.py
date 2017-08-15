@@ -150,7 +150,7 @@ class InferModel(object):
             self.preds = get_last_layer(self.decode_repr, decode_len-1)
 
             with tf.variable_scope("MLP_layer"):
-                self.logits = tf.contrib.layers.fully_connected(self.preds, self.config.num_classes, activation_fn=None)
+                self.logits = tf.contrib.layers.fully_connected(self.preds, self.config.num_classes)
 
             self.pred_softmax= tf.nn.softmax(self.logits, name="pred_softmax")
 
@@ -178,7 +178,8 @@ class InferModel(object):
 
     def setup_loss(self, logits, mask):
         onehot_labels = tf.one_hot(self.y, 2)
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=onehot_labels))
+        #loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=onehot_labels))
+        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,labels=self.y))
         #loss = tf.reduce_mean(tf.losses.hinge_loss(logits=logits, labels=onehot_labels))#used without softmax
         #loss =  tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,labels=onehot_labels))
         weights = [v for v in tf.trainable_variables() if 'bias' not in v.name]
