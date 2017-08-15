@@ -60,8 +60,8 @@ class Trainer():
         self.loss = model.get_loss()
         self.accuracy = model.get_accuracy()
         self.summary_op = model.get_summary()
-        self.train_writer = tf.summary.FileWriter('./temp/train/', graph=tf.get_default_graph())
-        self.valid_writer = tf.summary.FileWriter('./temp/valid/', graph=tf.get_default_graph())
+        self.train_writer = tf.summary.FileWriter('./temp/{}/train/'.format(self.config.dataset), graph=tf.get_default_graph())
+        self.valid_writer = tf.summary.FileWriter('./temp/{}/valid/'.format(self.config.dataset), graph=tf.get_default_graph())
         config = projector.ProjectorConfig()
         embedding = config.embeddings.add()
         embedding.tensor_name = self.model.word_emb_mat.name
