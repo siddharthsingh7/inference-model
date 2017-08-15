@@ -16,7 +16,6 @@ from data_util import minibatches
 from sklearn.metrics import classification_report, accuracy_score
 from tensorflow.python.platform import gfile
 from tensorflow.contrib.tensorboard.plugins import projector
-import matplotlib.pyplot as plt
 
 from ptpython.repl import embed
 
