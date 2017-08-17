@@ -179,10 +179,12 @@ class InferModel(object):
 
             self.accuracy = tf.reduce_mean(tf.cast(tf.equal(self.prediction, self.y), tf.float32))
 
-            self.train_op = tf.train.AdamOptimizer(self.learning_rate, beta1=0.9, beta2=0.999).minimize(self.loss)
-
-            grads = tf.gradients(self.loss, tf.trainable_variables())
-
+            #self.train_op = tf.train.AdamOptimizer(self.learning_rate, beta1=0.9, beta2=0.999).minimize(self.loss)
+            # Gradient clipping
+            optimizer = tf.train.AdamOptimizer(self.learning_rate, beta1=0.9, beta2=0.999)
+            grads = optimizer.compute_gradients(self.loss)
+            clipped_grads = [(tf.clip_by_value(grad, -1.0, 1.0), var) if grad != None else (grad, var) for grad, var in grads]
+            self.train_op = optimizer.apply_gradients(clipped_grads)
 
             tf.summary.scalar('accuracy', self.accuracy)
             '''
@@ -191,6 +193,7 @@ class InferModel(object):
             for var in tf.trainable_variables():
                 tf.summary.histogram(var.name.replace(':', '_'), var)
 
+            grads = tf.gradients(self.loss, tf.trainable_variables())
             for grad in grads: # none issues
                 if grad == None:
                     continue

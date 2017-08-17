@@ -13,7 +13,7 @@ from infer_model import InferModel
 import logging
 logging.basicConfig(level=logging.INFO)
 from data_util import minibatches
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.metrics import classification_report, accuracy_score, f1_score
 from tensorflow.python.platform import gfile
 from tensorflow.contrib.tensorboard.plugins import projector
 
@@ -91,8 +91,10 @@ class Trainer():
         training_loss = training_loss/total_batches
         training_accuracy = training_accuracy/total_batches
         print(classification_report(infer_label, prediction_all, target_names=['can\'t','can']))
-        print("Loss", training_loss)
-        print("Accuracy", training_accuracy)
+        score = f1_score(y_true=infer_label,y_pred=prediction_all)
+        print("Loss",training_loss)
+        print("F1_score",score)
+        return score
 
 
     def train_single_batch(self,session,*batch):
@@ -123,8 +125,10 @@ class Trainer():
         validation_loss = validation_loss/total_batches
         validation_accuracy = validation_accuracy/total_batches
         print(classification_report(infer_label, prediction_all, target_names=['can\'t','can']))
+        score = f1_score(y_true=infer_label,y_pred=prediction_all,average='weighted')
         print("Loss",validation_loss)
-        print("Accuracy",validation_accuracy)
+        print("F1_score",score)
+        return score
 
     def validate_single_batch(self,session,*batch):
         q_batch,q_len_batch,c_batch,c_len_batch,cf_batch,cf_len_batch,a_batch,a_len_batch,infer_label_batch = batch
@@ -320,7 +324,7 @@ def train():
 
     trainer = Trainer(model,FLAGS)
     saver = tf.train.Saver()
-
+    validation_scores = []
     with tf.device("/gpu:{}".format(FLAGS.gpu_id)):
         config = tf.ConfigProto()
         config.allow_soft_placement = True
@@ -351,12 +355,13 @@ def train():
 
             for epoch in range(FLAGS.num_epochs):
                 logging.info('-'*5 + "TRAINING-EPOCH-" + str(epoch)+ '-'*5)
-                trainer.run_epoch(sess, train_set, train_raw, epoch)
+                score = trainer.run_epoch(sess, train_set, train_raw, epoch)
                 logging.info('-'*5 + "-VALIDATE-" + str(epoch)+ '-'*5)
-                trainer.validate(sess, valid_set, valid_raw, epoch)
+                val_score = trainer.validate(sess, valid_set, valid_raw, epoch)
+                validation_scores.append(val_score)
                 #TODO early stopping
                 print("Saving Model")
-                save_path = saver.save(sess,"./temp/{}/model.ckpt".format(FLAGS.dataset))
+                save_path = saver.save(sess,"./{}/{}/model.ckpt".format(FLAGS.logdir,FLAGS.dataset))
 
 def test():
     pass
