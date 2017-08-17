@@ -123,7 +123,6 @@ class MatchLSTMCell(tf.contrib.rnn.BasicLSTMCell):
             F = tf.tanh(F_part1 + F_part2)
             pre_softmax_score = tf.reshape(tf.matmul(tf.reshape(F, [-1, self.d]), tf.expand_dims(v, 1)), [-1, self.enc_size]) + b
             beta = tf.nn.softmax(pre_softmax_score,name="beta")
-            tf.add_to_collection("matchlstm_attention",beta)
             h_beta = tf.reshape(tf.matmul(tf.expand_dims(beta, 1), self.Y), [-1, self.d])
             return (h_beta, tf.contrib.rnn.LSTMStateTuple(c,h_beta))
 
@@ -152,7 +151,8 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
         super(AttentionCell,self).__init__(state_size,state_is_tuple)
 
     def __call__(self,inputs,state,scope=None):
-        with tf.variable_scope("attention_cell"):
+        with tf.variable_scope("attention_cell") as scope:
+            scope.reuse_variables()
             c,h = state
             W_y,W_h,W_p,W_x,w = self.get_weights(self.d)
             m1 = tf.reshape(tf.matmul(tf.reshape(self.Y, [-1,self.d]),W_y),[-1,self.enc_size,self.d],name="m1")
@@ -160,7 +160,6 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
             M = tf.tanh(m1+m2)
             self.mask = tf.cast(self.mask,tf.float32)
             alpha = tf.reshape(tf.matmul(tf.reshape(M,[-1,self.d]),tf.expand_dims(w,1)),[-1,self.enc_size])
-            print(alpha)
             alpha = softmax_masked(alpha,self.mask)
             alpha = tf.nn.softmax(alpha,name="alpha")
             r = tf.reshape(tf.matmul(tf.expand_dims(alpha,1),self.Y),[-1,self.d])
@@ -178,4 +177,3 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
         W_x = tf.get_variable("W_x",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
         w = tf.get_variable("w",shape=[state_size,],dtype=tf.float32,initializer=xavier_init)
         return W_y,W_h,W_p,W_x,w
-

@@ -51,7 +51,8 @@ def negative_sampling(batches, minibatch_size):
         infer_label_batch.append(1)
 
         for i, qq in enumerate(batches[0]):
-            if qq != q:
+            cc = batches[2][i]
+            if qq != q and cc != c:
                 q_final_batch.append(qq)
                 q_final_len_batch.append(batches[1][i])
                 c_final_batch.append(c)

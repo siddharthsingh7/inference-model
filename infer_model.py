@@ -39,18 +39,15 @@ class InferModel(object):
         self.JFX = tf.placeholder(tf.int32, shape=(), name='JFX')
         self.learning_rate = tf.placeholder(tf.float32,shape=(),name="learning_rate")
         self.keep_prob = tf.placeholder(tf.float32,shape=(),name="keep_prob")
-        # Decay the learning rate exponentially based on the number of steps.
-        self.lr = tf.train.exponential_decay(self.learning_rate,
-                                             self.global_step,
-                                             self.config.num_per_decay,
-                                             self.config.decay_factor,
-                                             staircase=True)
+
+        # TODO Decay learning rate
+        # TODO gradient clipping
         self.W = tf.get_variable('W',shape=(2*self.state_size, self.config.num_classes), dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
         self.b = tf.get_variable('bias_b',shape=(self.config.num_classes), dtype=tf.float32, initializer=tf.constant_initializer(0))
 
         self.word_emb_mat = tf.get_variable(dtype=tf.float32, initializer=self.glove_embeddings, name="word_emb_mat")
-        #self.fx_emb_mat = tf.get_variable(dtype=tf.float32,shape=(2,15),name="fx_emb",initializer=tf.contrib.layers.xavier_initializer()) # embeddings for binary features
         self.fx_emb_mat = tf.Variable(tf.truncated_normal([2,15]), name='fx_emb')
+
         with tf.variable_scope("infer"):
             question, context, answer = self.setup_embeddings()
             fx = self.setup_feature_embeddings()
@@ -87,43 +84,62 @@ class InferModel(object):
 
             # Multiple hops over attention (ReasoNet)
             with tf.variable_scope("question_over_context") as scope:
-                state_fw, state_bw = tf.split(self.context_repr, 2, axis=2)
-                attention_cell_fw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_fw,
+                '''
+                Multihop model based on ReasoNet arXiv:1609.05284v3
+                '''
+                # Question over context attention
+                state_qx_fw, state_qx_bw = tf.split(self.context_repr, 2, axis=2)
+                attention_cell_qx_fw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_qx_fw,
                                                   encoder_input_size= self.JX, encoder_mask=self.x_mask)
-                attention_cell_bw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True,
-                                                  encoder_input=state_bw, encoder_input_size=self.JX, encoder_mask=self.x_mask)
+                attention_cell_qx_bw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True,
+                                                  encoder_input=state_qx_bw, encoder_input_size=self.JX, encoder_mask=self.x_mask)
+
+                #  Context over question attention
+                state_xq_fw, state_xq_bw = tf.split(self.question_repr, 2, axis=2)
+                attention_cell_xq_fw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_xq_fw,
+                                                  encoder_input_size= self.JQ, encoder_mask=self.q_mask)
+                attention_cell_xq_bw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True,
+                                                  encoder_input=state_xq_bw, encoder_input_size=self.JQ, encoder_mask=self.q_mask)
+
                 self.config.include_answer = False
                 if self.config.include_answer:
-                    attend_on = tf.concat([question, answer], 1)  # [N,JA+JQ,2*d]
-                    attend_on_length_mask = tf.concat([self.q_mask, self.a_mask], 1)  #[N,JA+JQ]
+                    attend_on_x = tf.concat([question, answer], 1)  # [N,JA+JQ,2*d]
+                    attend_on_x_mask = tf.concat([self.q_mask, self.a_mask], 1)  #[N,JA+JQ]
                 else:
-                    attend_on = question  # [N,JQ,2*d]
-                    attend_on_length_mask = self.q_mask  #[N,JQ]
+                    attend_on_x = self.question_repr  # [N,JQ,2*d] increases computation time
+                    attend_on_x_mask = self.q_mask  #[N,JQ]
 
-                '''
-                infer_gru = tf.contrib.rnn.GRUCell(2*self.config.state_size)
-                infer_seq_len = tf.reshape(tf.reduce_sum(tf.cast(self.q_mask, 'int32'), axis=1), [-1, ])
-                self.infer_state = get_last_layer(self.question_repr,infer_seq_len-1)
-                for i in range(self.config.num_hops):
-                    print("hop %d"%i)
-                    self.attended_repr, _, _ = biLSTM(attend_on, attend_on_length_mask,
-                                                      cell_fw=attention_cell_fw, cell_bw=attention_cell_bw,
+                attend_on_q = self.context_repr
+                attend_on_q_mask = self.x_mask
+
+                if self.config.num_hops > 0 :
+                    infer_gru = tf.contrib.rnn.GRUCell(2*self.config.state_size)
+                    infer_seq_len = tf.reshape(tf.reduce_sum(tf.cast(self.q_mask, 'int32'), axis=1), [-1, ])
+                    self.infer_state = get_last_layer(self.question_repr,infer_seq_len-1)
+                    for i in range(self.config.num_hops):
+                        print("hop %d"%i)
+
+                        with tf.variable_scope("question_over_context"):
+                            self.q_on_x, _, _ = biLSTM(attend_on_x, attend_on_x_mask,
+                                                              cell_fw=attention_cell_qx_fw, cell_bw=attention_cell_qx_bw,
+                                                              dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
+
+                        with tf.variable_scope("context_over_question"):
+                            self.x_on_q, _, _ = biLSTM(attend_on_q, attend_on_q_mask,
+                                                              cell_fw=attention_cell_xq_fw, cell_bw=attention_cell_xq_bw,
+                                                              dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JX,2*d]
+
+                        concat_attentions = tf.concat([self.q_on_x,self.x_on_q],1) #[N, JX + JQ, 2*d]
+                        reduced_attention = tf.reduce_sum(concat_attentions,1)
+                        self.final_infer_state,self.infer_state = infer_gru(reduced_attention,self.infer_state)
+                        attend_on_x = self.question_repr * tf.expand_dims(self.infer_state,1)
+                        attend_on_q = self.context_repr * tf.expand_dims(self.infer_state,1)
+                        scope.reuse_variables()
+                    self.attended_repr = self.q_on_x #[N,JQ,2*d]
+                else:
+                    self.attended_repr, _, _ = biLSTM(attend_on_x, attend_on_x_mask,
+                                                      cell_fw=attention_cell_qx_fw, cell_bw=attention_cell_qx_bw,
                                                       dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
-
-                    #TODO add query over context
-                    concat_attention = tf.cast(tf.get_collection("matchlstm_attention")[0],dtype=tf.float16,name="attention_matrix")
-
-                    self.final_infer_state,self.infer_state = tf.nn.dynamic_rnn(infer_gru,self.attended_repr,sequence_length=infer_seq_len,initial_state=self.infer_state,dtype=tf.float32)
-                    #reduced_attention = tf.reduce_sum(self.attended_repr,2)#check this
-                    #self.final_infer_state,self.infer_state = infer_gru(reduced_attention,self.infer_state)
-                    scope.reuse_variables()
-                '''
-                self.attended_repr, _, _ = biLSTM(attend_on, attend_on_length_mask,
-                                                  cell_fw=attention_cell_fw, cell_bw=attention_cell_bw,
-                                                  dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
-                self.final_infer_state = self.attended_repr
-            with tf.variable_scope("context_over_question"):
-                pass
 
             with tf.variable_scope("self_alignment"):
                 '''
@@ -136,8 +152,11 @@ class InferModel(object):
                 self.self_qalign_repr = tf.matmul(self.self_alignment,self.question_repr,name="qalign")
 
             with tf.variable_scope("aggregation_layer"):
-                self.final_layer = tf.concat([self.final_infer_state,self.self_qalign_repr,self.final_infer_state * self.self_qalign_repr, self.final_infer_state - self.self_qalign_repr],1)
-                self.final_mask = tf.concat([self.q_mask,self.q_mask,self.q_mask,self.q_mask],1)
+                '''
+                aggregation of context aware question and context aligned questions
+                '''
+                self.final_layer = tf.concat([self.attended_repr,self.self_qalign_repr],1)
+                self.final_mask = tf.concat([self.q_mask,self.q_mask],1)
 
             self.config.use_decoder = True
             if self.config.use_decoder:
@@ -156,32 +175,35 @@ class InferModel(object):
 
             self.loss = self.setup_loss(self.logits, self.final_mask)
 
-            #tf.summary.histogram('logits', self.logits)
             self.prediction = tf.argmax(self.pred_softmax, 1,name="prediction")
-            #tf.summary.histogram('prediction', self.prediction)
 
             self.accuracy = tf.reduce_mean(tf.cast(tf.equal(self.prediction, self.y), tf.float32))
 
-            tf.summary.scalar('accuracy', self.accuracy)
-            self.train_op = tf.train.AdamOptimizer(self.lr, beta1=0.9, beta2=0.999).minimize(self.loss)
+            self.train_op = tf.train.AdamOptimizer(self.learning_rate, beta1=0.9, beta2=0.999).minimize(self.loss)
 
             grads = tf.gradients(self.loss, tf.trainable_variables())
 
-            #for var in tf.trainable_variables():
-            #    tf.summary.histogram(var.name.replace(':', '_'), var)
+
+            tf.summary.scalar('accuracy', self.accuracy)
+            '''
+            tf.summary.histogram('logits', self.logits)
+            tf.summary.histogram('prediction', self.prediction)
+            for var in tf.trainable_variables():
+                tf.summary.histogram(var.name.replace(':', '_'), var)
 
             for grad in grads: # none issues
+                if grad == None:
+                    continue
+                else:
+                    tf.summary.histogram(grad.name.replace(':', '_'), grad)
                 pass
-
+            '''
             self.inc_step = self.global_step.assign_add(1)
             self.summary_op = tf.summary.merge_all()
 
     def setup_loss(self, logits, mask):
         onehot_labels = tf.one_hot(self.y, 2)
-        #loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=onehot_labels))
         loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,labels=self.y))
-        #loss = tf.reduce_mean(tf.losses.hinge_loss(logits=logits, labels=onehot_labels))#used without softmax
-        #loss =  tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=logits,labels=onehot_labels))
         weights = [v for v in tf.trainable_variables() if 'bias' not in v.name]
         l2_loss = tf.add_n([tf.nn.l2_loss(weight) for weight in weights])
         loss = loss + self.config.l2_beta * l2_loss
