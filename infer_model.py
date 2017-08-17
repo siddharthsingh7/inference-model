@@ -88,6 +88,7 @@ class InferModel(object):
                 '''
                 Multihop model based on ReasoNet arXiv:1609.05284v3
                 '''
+
                 # Question over context attention
                 state_qx_fw, state_qx_bw = tf.split(self.context_repr, 2, axis=2)
                 attention_cell_qx_fw = MatchLSTMCell(state_size=self.state_size, state_is_tuple=True, encoder_input=state_qx_fw,
@@ -121,10 +122,13 @@ class InferModel(object):
                     self.inner_state = get_last_layer(self.question_repr,qseq_len-1)
                     for i in range(self.config.num_hops):
                         logger.info("hop %d"%i)
+                        logger.info("question over context attention")
                         with tf.variable_scope("question_over_context"):
                             self.q_on_x, _, _ = biLSTM(attend_on_x, attend_on_x_mask,
                                                               cell_fw=attention_cell_qx_fw, cell_bw=attention_cell_qx_bw,
                                                               dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
+
+                        logger.info("context over question attention")
                         with tf.variable_scope("context_over_question"):
                             self.x_on_q, _, _ = biLSTM(attend_on_q, attend_on_q_mask,
                                                               cell_fw=attention_cell_xq_fw, cell_bw=attention_cell_xq_bw,
@@ -141,6 +145,7 @@ class InferModel(object):
                     self.attended_repr = self.q_on_x #[N,JQ,2*d]
                 else:
                     logger.info("Single Hops")
+                    logger.info("question over context attention")
                     self.attended_repr, _, _ = biLSTM(attend_on_x, attend_on_x_mask,
                                                       cell_fw=attention_cell_qx_fw, cell_bw=attention_cell_qx_bw,
                                                       dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]

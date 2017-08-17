@@ -86,30 +86,11 @@ class TreeLSTMCell(tf.contrib.rnn.BasicLSTMCell):
     Child Sum LSTM Tree - For dependency trees
     '''
     def __init__(self,state_size,state_is_tuple):
-        self._keep_prob = 0.8
         super(TreeLSTMCell,self).__init__(state_size,state_is_tuple)
 
     def __call__(self,inputs,state):
         #TODO
-        lhs, rhs = state
-        c0, h0 = lhs
-        c1, h1 = rhs
-        concat = tf.contrib.layers.linear(
-            tf.concat([inputs, h0, h1], 1), 5 * self._num_units)
-
-        # i = input_gate, j = new_input, f = forget_gate, o = output_gate
-        i, j, f0, f1, o = tf.split(value=concat, num_or_size_splits=5, axis=1)
-
-        j = self._activation(j)
-        if not isinstance(self._keep_prob, float) or self._keep_prob < 1:
-            j = tf.nn.dropout(j, self._keep_prob)
-
-        new_c = (c0 * tf.sigmoid(f0 + self._forget_bias) +
-                 c1 * tf.sigmoid(f1 + self._forget_bias) +
-                 tf.sigmoid(i) * j)
-        new_h = self._activation(new_c) * tf.sigmoid(o)
-
-        new_state = tf.contrib.rnn.LSTMStateTuple(new_c, new_h)
+        c,h = state
 
         return new_h, new_state
 
@@ -135,7 +116,8 @@ class MatchLSTMCell(tf.contrib.rnn.BasicLSTMCell):
             F = tf.tanh(F_part1 + F_part2)
             beta = softmax_masked(tf.reshape(tf.matmul(tf.reshape(F, [-1, self.d]), tf.expand_dims(v, 1)), [-1, self.enc_size]) + b,self.mask)
             h_beta = tf.reshape(tf.matmul(tf.expand_dims(beta, 1), self.Y), [-1, self.d])
-            return (h_beta, tf.contrib.rnn.LSTMStateTuple(c,h_beta))
+            new_state = tf.contrib.rnn.LSTMStateTuple(c,h_beta)
+            return super(MatchLSTMCell, self).__call__(h_beta, new_state)
 
     @staticmethod
     def get_weights(state_size):
@@ -171,7 +153,8 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
             alpha = softmax_masked(alpha,self.mask)
             r = tf.reshape(tf.matmul(tf.expand_dims(alpha,1),self.Y),[-1,self.d])
             h_star = tf.tanh( tf.matmul(r,W_p) + tf.matmul(inputs,W_x))
-            return (h_star, tf.contrib.rnn.LSTMStateTuple(c,h_star))
+            new_state = tf.contrib.rnn.LSTMStateTuple(c,h_star)
+            return super(MatchLSTMCell, self).__call__(h_star,new_state)
 
     @staticmethod
     def get_weights(state_size):
