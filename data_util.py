@@ -83,7 +83,6 @@ def load_glove_embeddings(glove_path):
     logger.info("Dimension: {}".format(glove.shape[1]))
     logger.info("Vocabulary: {}" .format(glove.shape[0]))
     glove = tf.to_float(glove)
-    logger.info("glove is: " + str(glove))
     return glove
 
 def load_dontknow_dataset(data_size, max_question_length, max_context_length):

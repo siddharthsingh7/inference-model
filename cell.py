@@ -3,6 +3,12 @@ from tensorflow.python.ops.rnn_cell import DropoutWrapper, RNNCell, LSTMStateTup
 import numpy as np
 from ptpython.repl import embed
 
+#TODO RECURRENT DROPOUT
+
+ORTHO_INIT = tf.orthogonal_initializer()
+ZERO_INIT = tf.constant_initializer(0)
+XAVIER_INIT = tf.contrib.layers.xavier_initializer()
+
 def add_paddings(sentence, max_length):
     mask = [True] * len(sentence)
     pad_len = max_length - len(sentence)
@@ -40,12 +46,21 @@ def get_last_layer(data, ind):
 
     return res
 
+def softmax_masked(values, mask):
+    '''
+    removing masked characters before taking a softmax
+    '''
+    exp = tf.exp(values - tf.reduce_max(values, 1, keep_dims=True)) * tf.cast(mask,tf.float32)
+    return tf.div(exp, tf.reduce_sum(exp, 1, keep_dims=True))
+
 
 def biLSTM(inputs, mask, state_size, cell_fw=None,cell_bw=None,dropout=None,scope=None):
+    '''
+    returns a biLSTM layer
+    '''
     if scope is None:
         scope = "biLSTM"
     with tf.variable_scope(scope):
-
         if cell_fw:
             cell_fw = cell_fw
             cell_bw = cell_bw
@@ -56,7 +71,7 @@ def biLSTM(inputs, mask, state_size, cell_fw=None,cell_bw=None,dropout=None,scop
         cell_fw = tf.contrib.rnn.DropoutWrapper(cell_fw, output_keep_prob=dropout)
         cell_fw = tf.contrib.rnn.DropoutWrapper(cell_fw, output_keep_prob=dropout)
 
-        seq_len = tf.reshape(tf.reduce_sum(tf.cast(mask, 'int32'), axis=1), [-1, ])
+        seq_len = tf.reshape(tf.reduce_sum(tf.cast(mask, tf.int32), axis=1), [-1, ])
 
         (hidden_state_fw, hidden_state_bw), (final_state_fw, final_state_bw) = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, seq_len, dtype=tf.float32)
 
@@ -98,9 +113,6 @@ class TreeLSTMCell(tf.contrib.rnn.BasicLSTMCell):
 
         return new_h, new_state
 
-def softmax_masked(scores, mask):
-    exp = tf.exp(scores - tf.reduce_max(scores, 1, keep_dims=True)) * mask
-    return tf.div(exp, tf.reduce_sum(exp, 1, keep_dims=True))
 
 class MatchLSTMCell(tf.contrib.rnn.BasicLSTMCell):
     '''
@@ -121,28 +133,24 @@ class MatchLSTMCell(tf.contrib.rnn.BasicLSTMCell):
             F_part1 = tf.reshape(tf.matmul(tf.reshape(self.Y, [-1, self.d]), V), [-1, self.enc_size, self.d])
             F_part2 = tf.expand_dims(tf.matmul(h, W_a) + b_a, 1)
             F = tf.tanh(F_part1 + F_part2)
-            pre_softmax_score = tf.reshape(tf.matmul(tf.reshape(F, [-1, self.d]), tf.expand_dims(v, 1)), [-1, self.enc_size]) + b
-            beta = tf.nn.softmax(pre_softmax_score,name="beta")
+            beta = softmax_masked(tf.reshape(tf.matmul(tf.reshape(F, [-1, self.d]), tf.expand_dims(v, 1)), [-1, self.enc_size]) + b,self.mask)
             h_beta = tf.reshape(tf.matmul(tf.expand_dims(beta, 1), self.Y), [-1, self.d])
             return (h_beta, tf.contrib.rnn.LSTMStateTuple(c,h_beta))
 
     @staticmethod
     def get_weights(state_size):
-        xavier_init= tf.contrib.layers.xavier_initializer()
-        xavier_init = tf.orthogonal_initializer()
-        zero_init = tf.constant_initializer(0)
-        V = tf.get_variable("V",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
-        W_a = tf.get_variable("W_a",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
-        b_a = tf.get_variable("bias_a",shape=[state_size,],dtype=tf.float32,initializer=zero_init)
-        v = tf.get_variable("v",shape=[state_size,],dtype=tf.float32,initializer=zero_init)
-        b = tf.get_variable("bias",shape=[],dtype=tf.float32,initializer=zero_init)
+        V = tf.get_variable("V",shape=[state_size,state_size],dtype=tf.float32,initializer=ORTHO_INIT)
+        W_a = tf.get_variable("W_a",shape=[state_size,state_size],dtype=tf.float32,initializer=ORTHO_INIT)
+        b_a = tf.get_variable("bias_a",shape=[state_size,],dtype=tf.float32,initializer=ZERO_INIT)
+        v = tf.get_variable("v",shape=[state_size,],dtype=tf.float32,initializer=XAVIER_INIT)
+        b = tf.get_variable("bias",shape=[],dtype=tf.float32,initializer=ZERO_INIT)
         return V, W_a, b_a, v, b
 
 
-#TODO RECURRENT DROPOUT
-
-
 class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
+    '''
+    Neural Attention Cell from arXiv:1509.06664v1
+    '''
     def __init__(self,state_size,state_is_tuple,encoder_input,encoder_input_size,encoder_mask):
         self.d = state_size
         self.Y = encoder_input
@@ -161,19 +169,15 @@ class AttentionCell(tf.contrib.rnn.BasicLSTMCell):
             self.mask = tf.cast(self.mask,tf.float32)
             alpha = tf.reshape(tf.matmul(tf.reshape(M,[-1,self.d]),tf.expand_dims(w,1)),[-1,self.enc_size])
             alpha = softmax_masked(alpha,self.mask)
-            alpha = tf.nn.softmax(alpha,name="alpha")
             r = tf.reshape(tf.matmul(tf.expand_dims(alpha,1),self.Y),[-1,self.d])
             h_star = tf.tanh( tf.matmul(r,W_p) + tf.matmul(inputs,W_x))
             return (h_star, tf.contrib.rnn.LSTMStateTuple(c,h_star))
 
     @staticmethod
     def get_weights(state_size):
-        xavier_init= tf.contrib.layers.xavier_initializer()
-        xavier_init = tf.orthogonal_initializer()
-        zero_init = tf.constant_initializer(0)
-        W_y = tf.get_variable("W_y",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
-        W_h = tf.get_variable("W_h",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
-        W_p = tf.get_variable("W_p",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
-        W_x = tf.get_variable("W_x",shape=[state_size,state_size],dtype=tf.float32,initializer=xavier_init)
-        w = tf.get_variable("w",shape=[state_size,],dtype=tf.float32,initializer=xavier_init)
+        W_y = tf.get_variable("W_y",shape=[state_size,state_size],dtype=tf.float32,initializer=ORTHO_INIT)
+        W_h = tf.get_variable("W_h",shape=[state_size,state_size],dtype=tf.float32,initializer=ORTHO_INIT)
+        W_p = tf.get_variable("W_p",shape=[state_size,state_size],dtype=tf.float32,initializer=ORTHO_INIT)
+        W_x = tf.get_variable("W_x",shape=[state_size,state_size],dtype=tf.float32,initializer=ORTHO_INIT)
+        w = tf.get_variable("w",shape=[state_size,],dtype=tf.float32,initializer=XAVIER_INIT)
         return W_y,W_h,W_p,W_x,w

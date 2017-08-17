@@ -8,7 +8,9 @@ from cell import biLSTM, AttentionCell, MatchLSTMCell, get_last_layer,padding_ba
 from data_util import minibatches
 from sklearn.metrics import classification_report,accuracy_score
 
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
 from ptpython.repl import embed
 
@@ -41,46 +43,45 @@ class InferModel(object):
         self.keep_prob = tf.placeholder(tf.float32,shape=(),name="keep_prob")
 
         # TODO Decay learning rate
-        # TODO gradient clipping
-        self.W = tf.get_variable('W',shape=(2*self.state_size, self.config.num_classes), dtype=tf.float32, initializer=tf.contrib.layers.xavier_initializer())
-        self.b = tf.get_variable('bias_b',shape=(self.config.num_classes), dtype=tf.float32, initializer=tf.constant_initializer(0))
 
+        self.data_size = tf.constant(self.config.dataset_size,name="dataset_size")
         self.word_emb_mat = tf.get_variable(dtype=tf.float32, initializer=self.glove_embeddings, name="word_emb_mat")
         self.fx_emb_mat = tf.Variable(tf.truncated_normal([2,15]), name='fx_emb')
 
         with tf.variable_scope("infer"):
-            question, context, answer = self.setup_embeddings()
-            fx = self.setup_feature_embeddings()
-            # [N,JQ,2d] , [N,JX,2d], [N,JA,2d]
-
-            with tf.variable_scope("compare_layer"):
-                pass
+            question, context, answer = self.setup_embeddings() #[ N,?,100]
+            fx = self.setup_feature_embeddings() #[N,JFX,15]
 
             with tf.variable_scope("concatenate_context_embeddings"):
                 '''
                 Concatenate overlap features
                 '''
                 f1,f2,f3 = tf.split(fx,3,axis=1)
-                context = tf.concat([context,f1,f2,f3],axis=2)
-
+                if self.config.overlap:
+                    logger.info("Using overlap features")
+                    context = tf.concat([context,f1,f2,f3],axis=2)
 
             with tf.variable_scope("encoder"):
-                self.question_repr = self.encode(question,self.q_mask,scope="question_repr")
-                self.context_repr = self.encode(context,self.x_mask,scope="context_repr")
-                self.answer_repr = self.encode(answer,self.a_mask,scope="answer_repr")
+
+                logger.info("Encoder")
+                self.question_repr = self.encode(question,self.q_mask,scope="question_repr")#[N,JQ,2d]
+                self.context_repr = self.encode(context,self.x_mask,scope="context_repr")#[N,JX,2d]
+                self.answer_repr = self.encode(answer,self.a_mask,scope="answer_repr")#[N,JA,2d]
 
             with tf.variable_scope("aligned_question_embeddings"):
                 '''
                 Aligned Question Embeddings from arXiv:1704.00051v2
                 captures soft alignment between embeddings
                 '''
-                question_repr_t = tf.transpose(self.question_repr,[0,2,1]) #[N,2d,JQ]
-                aligned_attention = tf.exp(tf.matmul(self.context_repr,question_repr_t)) #[N,JX,JQ]
-                aligned_attention_sum = tf.tile(tf.reduce_sum(aligned_attention,axis=2,keep_dims=True),[1,1,self.JQ])
-                self.q_aligned_attn = tf.divide(aligned_attention,tf.subtract(aligned_attention_sum,aligned_attention),name="q_alignments") #[N,JX,JQ]
-                self.q_aligned_context = tf.multiply(self.context_repr, tf.reduce_sum(self.q_aligned_attn,2,keep_dims=True)) #[N,JX,2d]
-
-            self.context_repr = tf.add(self.context_repr,self.q_aligned_context)
+                if self.config.ques_aligned_context:
+                    logger.info("Using Question Aligned embeddings")
+                    question_repr_t = tf.transpose(self.question_repr,[0,2,1]) #[N,2d,JQ]
+                    aligned_attention = tf.exp(tf.matmul(self.context_repr,question_repr_t)) #[N,JX,JQ]
+                    aligned_attention_sum = tf.tile(tf.reduce_sum(aligned_attention,axis=2,keep_dims=True),[1,1,self.JQ])
+                    self.q_aligned_attn = tf.divide(aligned_attention,tf.subtract(aligned_attention_sum,aligned_attention),name="q_alignments") #[N,JX,JQ]
+                    self.q_aligned_context = tf.multiply(self.context_repr, tf.reduce_sum(self.q_aligned_attn,2,keep_dims=True)) #[N,JX,2d]
+                    # Concatenating with context_repr
+                    self.context_repr = tf.add(self.context_repr,self.q_aligned_context)
 
             # Multiple hops over attention (ReasoNet)
             with tf.variable_scope("question_over_context") as scope:
@@ -103,40 +104,43 @@ class InferModel(object):
 
                 self.config.include_answer = False
                 if self.config.include_answer:
-                    attend_on_x = tf.concat([question, answer], 1)  # [N,JA+JQ,2*d]
+                    attend_on_x = tf.concat([question, answer], 1)  # [N,JA+JQ,2d]
                     attend_on_x_mask = tf.concat([self.q_mask, self.a_mask], 1)  #[N,JA+JQ]
                 else:
-                    attend_on_x = self.question_repr  # [N,JQ,2*d] increases computation time
+                    attend_on_x = self.question_repr  # [N,JQ,2d]
                     attend_on_x_mask = self.q_mask  #[N,JQ]
 
-                attend_on_q = self.context_repr
+                attend_on_q = self.context_repr #[N,JX,2d]
                 attend_on_q_mask = self.x_mask
 
                 if self.config.num_hops > 0 :
-                    infer_gru = tf.contrib.rnn.GRUCell(2*self.config.state_size)
-                    infer_seq_len = tf.reshape(tf.reduce_sum(tf.cast(self.q_mask, 'int32'), axis=1), [-1, ])
-                    self.infer_state = get_last_layer(self.question_repr,infer_seq_len-1)
+                    logger.info("Multi Hops")
+                    gru_cell = tf.contrib.rnn.GRUCell(2*self.config.state_size)
+                    qseq_len = tf.reshape(tf.reduce_sum(tf.cast(self.q_mask, tf.int32), axis=1), [-1, ])
+                    # Initalize the first state of gru state
+                    self.inner_state = get_last_layer(self.question_repr,qseq_len-1)
                     for i in range(self.config.num_hops):
-                        print("hop %d"%i)
-
+                        logger.info("hop %d"%i)
                         with tf.variable_scope("question_over_context"):
                             self.q_on_x, _, _ = biLSTM(attend_on_x, attend_on_x_mask,
                                                               cell_fw=attention_cell_qx_fw, cell_bw=attention_cell_qx_bw,
                                                               dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
-
                         with tf.variable_scope("context_over_question"):
                             self.x_on_q, _, _ = biLSTM(attend_on_q, attend_on_q_mask,
                                                               cell_fw=attention_cell_xq_fw, cell_bw=attention_cell_xq_bw,
                                                               dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JX,2*d]
-
                         concat_attentions = tf.concat([self.q_on_x,self.x_on_q],1) #[N, JX + JQ, 2*d]
-                        reduced_attention = tf.reduce_sum(concat_attentions,1)
-                        self.final_infer_state,self.infer_state = infer_gru(reduced_attention,self.infer_state)
-                        attend_on_x = self.question_repr * tf.expand_dims(self.infer_state,1)
-                        attend_on_q = self.context_repr * tf.expand_dims(self.infer_state,1)
+                        reduced_attention = tf.reduce_sum(concat_attentions,1) #[N,2d]
+                        # Calculate new inner state
+                        _,self.inner_state = gru_cell(reduced_attention,self.inner_state)
+                        # adjust question repr with inner state
+                        attend_on_x = self.question_repr * tf.expand_dims(self.inner_state,1)
+                        attend_on_q = self.context_repr * tf.expand_dims(self.inner_state,1)
                         scope.reuse_variables()
+                    # get final attended layer
                     self.attended_repr = self.q_on_x #[N,JQ,2*d]
                 else:
+                    logger.info("Single Hops")
                     self.attended_repr, _, _ = biLSTM(attend_on_x, attend_on_x_mask,
                                                       cell_fw=attention_cell_qx_fw, cell_bw=attention_cell_qx_bw,
                                                       dropout=self.keep_prob, state_size=self.config.state_size)  #[N,JQ,2*d]
@@ -145,21 +149,27 @@ class InferModel(object):
                 '''
                 Self Alignment Layer from arXiv:1705.02798v1
                 '''
-                attended_repr_t = tf.transpose(self.attended_repr,[0,2,1])
-                self.self_alignment = tf.matmul(self.attended_repr,attended_repr_t) # [N,JQ,JQ]
-                diag = tf.ones_like(tf.cast(self.q_mask,tf.float32))
-                self.self_alignment = tf.transpose(tf.matrix_set_diag(self.self_alignment,diag),[0,2,1],name="self_alignment")
-                self.self_qalign_repr = tf.matmul(self.self_alignment,self.question_repr,name="qalign")
+                if self.config.self_alignment:
+                    logger.info("Self Alignment Layer")
+                    attended_repr_t = tf.transpose(self.attended_repr,[0,2,1])
+                    self.self_alignment = tf.matmul(self.attended_repr,attended_repr_t) # [N,JQ,JQ]
+                    diag = tf.ones_like(tf.cast(self.q_mask,tf.float32))
+                    self.self_alignment = tf.transpose(tf.matrix_set_diag(self.self_alignment,diag),[0,2,1],name="self_alignment")
+                    self.self_qalign_repr = tf.matmul(self.self_alignment,self.question_repr,name="qalign")
 
             with tf.variable_scope("aggregation_layer"):
                 '''
-                aggregation of context aware question and context aligned questions
+                aggregation of context aware question and self aligned questions
                 '''
-                self.final_layer = tf.concat([self.attended_repr,self.self_qalign_repr],1)
-                self.final_mask = tf.concat([self.q_mask,self.q_mask],1)
+                if self.config.self_alignment:
+                    self.final_layer = tf.concat([self.attended_repr,self.self_qalign_repr],1)
+                    self.final_mask = tf.concat([self.q_mask,self.q_mask],1)
+                else:
+                    self.final_layer = self.attended_repr
+                    self.final_mask = self.q_mask
 
-            self.config.use_decoder = True
             if self.config.use_decoder:
+                logger.info("Decoding")
                 self.decode_repr = self.decode(self.final_layer,self.final_mask)
                 decode_len = tf.reshape(tf.reduce_sum(tf.cast(self.final_mask, tf.int32), axis=1), [-1, ])
             else:
@@ -284,10 +294,9 @@ class InferModel(object):
         feed_dict[self.JA] = JA
         feed_dict[self.JFX] = JFX
         feed_dict[self.learning_rate] = self.config.learning_rate
-        feed_dict[self.keep_prob] = self.config.dropout
+        feed_dict[self.keep_prob] = self.config.keep_prob
         if label_batch is not None:
             feed_dict[self.y] = label_batch
-        #TODO train_flag
         return feed_dict
 
     def get_loss(self):

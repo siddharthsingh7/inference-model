@@ -19,27 +19,36 @@ from tensorflow.contrib.tensorboard.plugins import projector
 
 from ptpython.repl import embed
 
-tf.app.flags.DEFINE_string("data_dir", "./data/squad_features", "SQUAD data directory")
+tf.app.flags.DEFINE_string("data_dir", "./data/squad_features", "data directory")
 tf.app.flags.DEFINE_string("data_size", "tiny", "tiny/full")
+tf.app.flags.DEFINE_string("dataset", "squad", "squad/dontknow")
+tf.app.flags.DEFINE_string("mode", "train", "train/interactive/test")
+tf.app.flags.DEFINE_string("logdir", "temp", "log directory")
+tf.app.flags.DEFINE_integer("num_classes", 2, "number of classes")
+
 tf.app.flags.DEFINE_float("learning_rate", 0.0015, "Initial learning rate ")
 tf.app.flags.DEFINE_integer("num_per_decay", 6, "Epochs before reducing learning rate.")
 tf.app.flags.DEFINE_float("decay_factor", 0.01, "Decay factor")
 tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Norm for clipping gradients ")
-tf.app.flags.DEFINE_float("dropout", 0.8, "Dropout")
+tf.app.flags.DEFINE_float("keep_prob", 0.8, "keep_prob")
 tf.app.flags.DEFINE_float("l2_beta", 0.00001, "L2-beta")
 tf.app.flags.DEFINE_integer("num_epochs", 10, "Number of epochs")
+
 tf.app.flags.DEFINE_integer("state_size", 100, "State Size")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Embedding Size")
 tf.app.flags.DEFINE_integer("max_question_length", 60, "Maximum Question Length")
 tf.app.flags.DEFINE_integer("max_context_length", 300, "Maximum Context Length")
 tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size")
+
 tf.app.flags.DEFINE_integer("num_hops", 0, "Number of hops")
+tf.app.flags.DEFINE_bool("overlap",False,"Use overlap features or not")
+tf.app.flags.DEFINE_bool("ques_aligned_context",False,"Use question aligned embeddings")
+tf.app.flags.DEFINE_bool("self_alignment",False,"Use self alignment")
+tf.app.flags.DEFINE_bool("use_decoder",True,"Use two decoder layers")
+
 tf.app.flags.DEFINE_integer("gpu_id", 0, "gpu id")
 tf.app.flags.DEFINE_float("gpu_fraction", 0.8, " % of GPU memory used.")
-tf.app.flags.DEFINE_integer("num_classes", 2, "number of classes")
-tf.app.flags.DEFINE_string("dataset", "squad", "squad/dontknow")
-tf.app.flags.DEFINE_string("mode", "train", "train/interactive/test")
-tf.app.flags.DEFINE_string("logdir", "temp", "log directory")
+
 FLAGS = tf.app.flags.FLAGS
 
 
@@ -102,8 +111,8 @@ class Trainer():
         input_feed  = self.model.create_feed_dict(q_batch,q_len_batch,c_batch,c_len_batch,
                                                   cf_batch,cf_len_batch,a_batch,a_len_batch,
                                                   label_batch=infer_label_batch)
-        output_feed = [self.model.train_op,self.loss,self.global_step,self.accuracy,self.summary_op,self.model.prediction,self.model.q_aligned_attn,self.model.q_aligned_context]
-        _,loss,global_step,accuracy,summary,prediction,e,f = session.run(output_feed,feed_dict=input_feed)
+        output_feed = [self.model.train_op,self.loss,self.global_step,self.accuracy,self.summary_op,self.model.prediction]
+        _,loss,global_step,accuracy,summary,prediction = session.run(output_feed,feed_dict=input_feed)
         return loss,accuracy,summary,global_step,infer_label_batch,prediction
 
     def validate(self,session,validation_set,validation_raw,epoch):
@@ -146,9 +155,9 @@ class Trainer():
 class InteractiveSess(cmd.Cmd):
 
     def __init__(self, config, session):
-        self.context = ''
-        self.question = ''
-        self.inference = ''
+        self.context = None
+        self.question = None
+        self.inference = None
         self.session = session
         self.graph = None
         self.config = config
@@ -171,13 +180,12 @@ class InteractiveSess(cmd.Cmd):
         JQ = self.graph.get_tensor_by_name("JQ:0")
         JFX = self.graph.get_tensor_by_name("JFX:0")
         JA = self.graph.get_tensor_by_name("JA:0")
-        keep_prob = self.graph_get_tensor_by_name("keep_prob:0")
+        keep_prob = self.graph.get_tensor_by_name("keep_prob:0")
 
         jq = np.max(question_len_batch)
         jx = np.max(context_len_batch)
         ja = np.max(ans_len_batch)
         jfx = np.max(context_features_len_batch)
-        keep_prob = 1.0
         question, question_mask = padding_batch(question_batch, jq)
         context, context_mask = padding_batch(context_batch, jx)
         answer, answer_mask = padding_batch(ans_batch, ja)
@@ -195,6 +203,7 @@ class InteractiveSess(cmd.Cmd):
         feed_dict[JX] = jx
         feed_dict[JA] = ja
         feed_dict[JFX] = jfx
+        feed_dict[keep_prob] = self.config.keep_prob
         if label_batch is not None:
             feed_dict[y] = label_batch
         return feed_dict
@@ -204,23 +213,25 @@ class InteractiveSess(cmd.Cmd):
         input_feed  = self.create_feed_dict([q_batch],[q_len_batch],[c_batch],[c_len_batch],
                                                   [cf_batch],[cf_len_batch],[a_batch],[a_len_batch]
                                                   ,label_batch=None)
+        prob_softmax = []
         probs = []
-        output_feed = [self.graph.get_tensor_by_name("infer/question_over_context/attention_matrix:0")]
+        data_size = None
         for _ in range(20):
-            embed(globals(),locals())
-            output_feed = [self.graph.get_tensor_by_name("infer/pred_softmax:0"), self.graph.get_tensor_by_name("infer/prediction:0")]
-            a, b, c, d  = session.run(output_feed, feed_dict=input_feed)
-            attention = tf.get_collection("matchlstm_attention")
-            probs.append(a[0][int(b[0])])
+            output_feed = [self.graph.get_tensor_by_name("infer/pred_softmax:0"),
+                            self.graph.get_tensor_by_name("infer/prediction:0"),
+                            self.graph.get_tensor_by_name("dataset_size:0")]
+            a, b, c  = session.run(output_feed, feed_dict=input_feed)
+            if data_size is None:
+                data_size = c
+            prob_softmax.append(a[0][int(b[0])])
+            probs.append(b[0])
 
         predictive_mean = np.mean(probs, axis=0)
         predictive_variance = np.var(probs, axis=0)
-        tau = l**2 * (1 - self.config.learning_rate) / (2 * N * self.config.decay_rate)
+        l = 2
+        tau = l**2 * (1 - self.config.learning_rate) / (2 * data_size * self.config.decay_factor)
         predictive_variance += tau**-1
-
-        # visualize attention
-
-        embed(globals(),locals())
+        print("predicting with confidence - {}".format(predictive_variance))
         return b[0]
 
 
@@ -284,11 +295,14 @@ class InteractiveSess(cmd.Cmd):
             self.question = text
 
     def do_infer(self, text):
-        self.run_inference()
-        if self.inference == 1:
-            print("I can answer that")
+        if self.context is not None and self.question is not None:
+            self.run_inference()
+            if self.inference == 1:
+                print("I can answer that")
+            else:
+                print("Can't answer that")
         else:
-            print("Can't answer that")
+            print("Enter both question and context")
 
     def do_EOF(self, line):
         return True
@@ -318,8 +332,9 @@ def train():
         vocab, rev_vocab = initialize_vocab(vocab_path)
         embeddings = load_glove_embeddings(embed_path)
     else:
-        print("enter squad or dontknow for dataset flag")
+        print("enter either squad or dontknow for dataset flag")
         return
+    FLAGS.dataset_size = len(dataset['training'])
     model = InferModel(FLAGS, embeddings, vocab)
 
     trainer = Trainer(model,FLAGS)
@@ -331,7 +346,7 @@ def train():
         config.gpu_options.per_process_gpu_memory_fraction = FLAGS.gpu_fraction
         config.gpu_options.allow_growth = True
         with tf.Session(config=config) as sess:
-            logging.info("Created model with fresh parameters.")
+            logging.info("Created a new model")
             sess.run(tf.global_variables_initializer())
             logging.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
             train_set = dataset['training']
@@ -343,7 +358,6 @@ def train():
                     question = ' '.join(line[0])
                     context = ' '.join(line[1])
                     answer =  ' '.join(line[2])
-
                     e.write("-"*5)
                 e.write(" -- VALID- - -")
                 for line in valid_raw:
@@ -367,13 +381,17 @@ def test():
     pass
 
 def interactive():
+    '''
+    Loading dataset to calculate data_size
+    '''
+
     with tf.device("/gpu:{}".format(FLAGS.gpu_id)):
         config = tf.ConfigProto()
         config.allow_soft_placement = True
         config.gpu_options.per_process_gpu_memory_fraction = FLAGS.gpu_fraction
         with tf.Session(config=config) as sess:
-            saver = tf.train.import_meta_graph('./temp/model.ckpt.meta')
-            saver.restore(sess, tf.train.latest_checkpoint('./temp'))
+            saver = tf.train.import_meta_graph("./{}/{}/model.ckpt.meta".format(FLAGS.logdir,FLAGS.dataset))
+            saver.restore(sess, tf.train.latest_checkpoint("./{}/{}".format(FLAGS.logdir,FLAGS.dataset)))
             interactive_sesh = InteractiveSess(FLAGS,sess)
             interactive_sesh.cmdloop()
 
